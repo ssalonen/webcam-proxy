@@ -1,0 +1,8 @@
+{
+  "editor.formatOnSave": true,
+  "editor.rulers": [80],
+  "files.trimTrailingWhitespace": true,
+  "rust.actionOnSave": "check",
+  "workbench.iconTheme": "vscode-icons",
+  "rust.mode": "legacy"
+}

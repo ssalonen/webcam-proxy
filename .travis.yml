@@ -1,0 +1,36 @@
+dist: trusty
+services: docker
+sudo: required
+language: rust
+rust:
+  - stable
+addons:
+  apt:
+    packages:
+      - xz-utils
+      - bsdtar
+      - build-essential
+
+cache: cargo
+before_cache:
+  - chmod -R a+r $HOME/.cargo
+
+env:
+  global:
+    - CRATE_NAME=webcam-proxy
+
+matrix:
+  include:
+    - env: TARGET=x86_64-unknown-linux-gnu
+
+before_install:
+  - set -e
+  - rustup self update
+
+install:
+  - cargo install cross --force
+
+script:
+  - sh ci/script.sh
+
+after_script: set +e

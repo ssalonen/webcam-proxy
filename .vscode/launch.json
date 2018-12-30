@@ -1,0 +1,49 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests in library 'rusty-foscam'",
+      "cargo": {
+        "args": ["test", "--no-run", "--lib", "--package=rusty-foscam"],
+        "filter": {
+          "kind": "lib"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug executable 'rusty-foscam'",
+      "cargo": {
+        "args": ["build", "--bin=rusty-foscam", "--package=rusty-foscam"]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests in executable 'rusty-foscam'",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run",
+          "--bin=rusty-foscam",
+          "--package=rusty-foscam"
+        ],
+        "filter": {
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

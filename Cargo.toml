@@ -1,0 +1,21 @@
+[package]
+name = "webcam-proxy"
+version = "0.1.0"
+authors = ["Sami Salonen"]
+edition = "2018"
+
+[dependencies]
+image = "0.20.0"
+imageproc = "0.17.0"
+futures = "0.1.25"
+hyper = "0.12.24"
+tokio = "0.1.15"
+serde = { version = "1.0.88", features = ["derive"] }
+lazy_static = "1.2.0"
+hyper-tls = "0.3.1"
+toml = "0.4.10"
+url = "1.7.2"
+rusttype = "0.7.5"
+qutex = "0.2.1"
+rand="0.6.5"
+failure="0.1.5"

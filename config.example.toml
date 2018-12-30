@@ -1,0 +1,10 @@
+[server]
+listen = "127.0.0.1:3000"
+
+[server.auth]
+MYUSER = "MYPWD"
+MYUSER2 = "MYPWD2"
+MYUSER3 = "MYPWD3"
+
+[webcam]
+url = "https://mycam/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr=MYUSER&pwd=MYPWD"

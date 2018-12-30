@@ -1,0 +1,12 @@
+[Unit]
+Description=Webcam proxy
+After=network.target
+
+[Service]
+Type=simple
+User=MYSERVICEUSER
+ExecStart=/PATH/TO/rusty-foscam path/to/config.toml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
