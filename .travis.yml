@@ -4,6 +4,7 @@ sudo: required
 language: rust
 rust:
   - stable
+  - nightly
 addons:
   apt:
     packages:
