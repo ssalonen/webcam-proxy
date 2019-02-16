@@ -1,4 +1,6 @@
-# Proxy to web camera
+# webcam-proxy
+
+[![Build Status](https://travis-ci.org/ssalonen/webcam-proxy.svg?branch=master)](https://travis-ci.org/ssalonen/webcam-proxy)
 
 ## Introduction
 
