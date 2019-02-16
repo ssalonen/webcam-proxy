@@ -64,4 +64,5 @@ of FOSCAM web camera (e.g. admin interface).
 
 ## Other
 
-`/ci` from https://github.com/japaric/trust
+`/ci` and `/.travis.yml` adapted from https://github.com/japaric/trust under
+MIT license.
