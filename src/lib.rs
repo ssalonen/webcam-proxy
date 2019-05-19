@@ -23,6 +23,7 @@ use rusttype::{Font, Scale};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use tokio::prelude::future::*;
@@ -31,8 +32,12 @@ use tokio::timer::Interval;
 
 use rand::Rng;
 
+static DOWNLOAD_DELAY_NO_CLIENTS: Duration = Duration::from_secs(30);
+static DOWNLOAD_DELAY_CLIENTS: Duration = Duration::from_secs(1);
 static DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
-static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(20);
+static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(90);
+// if more than CLIENT_STALE_THRESHOLD elapsed since last successfull sent
+// message, kick the client out
 static CLIENT_STALE_THRESHOLD: Duration = Duration::from_secs(300);
 static WIDTH: u32 = 1280;
 static HEIGHT: u32 = 960;
@@ -71,6 +76,8 @@ enum DownloadError {
     NonSuccessfullStatus { status: u16 },
     #[fail(display = "download timeout")]
     Timeout {},
+    #[fail(display = "downloading error")]
+    DownloadingError {},
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -156,7 +163,7 @@ impl Server {
                                     .map_err(|_| ())
                                     .and_then(move |(handle, client_index, rest)| {
                                         let client = handle;
-                                        let error_time = match (
+                                        let last_message = match (
                                             client.first_error,
                                             client.last_sent,
                                             client.created,
@@ -172,7 +179,7 @@ impl Server {
                                             }
                                             (None, None, created) => created,
                                         };
-                                        if error_time.elapsed() > CLIENT_STALE_THRESHOLD {
+                                        if last_message.elapsed() > CLIENT_STALE_THRESHOLD {
                                             return Either::A(
                                                 self.clients
                                                     .clone()
@@ -260,6 +267,29 @@ impl Server {
             .map_err(|_| ())
     }
 
+    fn download_picture_async_loop(
+        &'static self,
+        http_client: Arc<HttpClient>,
+    ) -> impl Future<Item = Instant, Error = DownloadError> {
+        loop_fn(Instant::now(), move |last_download| {
+            self.download_picture_async(&http_client)
+                .then(move |_| self.clients.clone().lock())
+                .map_err(|_| panic!("clients lock tainted. Bug?"))
+                .and_then(move |clients| ok(clients.len()))
+                .then(move |num_clients| {
+                    let sleep = if num_clients > Ok(0) {
+                        DOWNLOAD_DELAY_CLIENTS
+                    } else {
+                        // no clients or error
+                        DOWNLOAD_DELAY_NO_CLIENTS
+                    };
+                    tokio::timer::Delay::new(last_download + sleep)
+                        .map_err(|_| DownloadError::Generic {})
+                })
+                .then(|_| Ok(Loop::Continue(Instant::now())))
+        })
+    }
+
     fn download_picture_async(
         &'static self,
         http_client: &HttpClient,
@@ -287,7 +317,7 @@ impl Server {
                     acc.extend_from_slice(&*chunk);
                     futures::future::ok::<_, hyper::Error>(acc)
                 })
-                .map_err(|_| panic!("Unexpected error. Bug?"))
+                .map_err(|_| DownloadError::DownloadingError {})
             })
             .timeout(DOWNLOAD_TIMEOUT)
             .map_err(|_| DownloadError::Timeout {})
@@ -402,18 +432,18 @@ impl Server {
             .map_err(|e| panic!("Push maintenance failed: {}", e));
 
         let https = HttpsConnector::new(16).expect("TLS initialization failed");
-        let http_client = hyper::Client::builder().build::<_, hyper::Body>(https);
+        let http_client = Arc::new(hyper::Client::builder().build::<_, hyper::Body>(https));
 
-        let download_new = Interval::new(Instant::now(), Duration::from_secs(1))
-            .map_err(|e| panic!("Push download_new failed: {}", e))
-            .for_each(move |_| self.download_picture_async(&http_client).then(|_| ok(())));
+        let download_loop = self
+            .download_picture_async_loop(http_client.clone())
+            .then(|_| ok(()));
 
         thread::spawn(move || {
             hyper::rt::run(
                 http_server
                     .join(maintenance)
                     .join(stale_monitor)
-                    .join(download_new)
+                    .join(download_loop)
                     .map(|_| ()),
             );
         })
