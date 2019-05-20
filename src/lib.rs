@@ -38,7 +38,7 @@ static DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(90);
 // if more than CLIENT_STALE_THRESHOLD elapsed since last successfull sent
 // message, kick the client out
-static CLIENT_STALE_THRESHOLD: Duration = Duration::from_secs(300);
+static CLIENT_STALE_THRESHOLD: Duration = Duration::from_secs(90);
 static WIDTH: u32 = 1280;
 static HEIGHT: u32 = 960;
 lazy_static! {
@@ -163,21 +163,10 @@ impl Server {
                                     .map_err(|_| ())
                                     .and_then(move |(handle, client_index, rest)| {
                                         let client = handle;
-                                        let last_message = match (
-                                            client.first_error,
-                                            client.last_sent,
-                                            client.created,
-                                        ) {
-                                            (Some(first_error), None, _) => first_error,
-                                            (None, Some(last_sent), _) => last_sent,
-                                            (Some(first_error), Some(last_sent), _) => {
-                                                if first_error > last_sent {
-                                                    first_error
-                                                } else {
-                                                    last_sent
-                                                }
-                                            }
-                                            (None, None, created) => created,
+                                        let last_message = match (client.last_sent, client.created)
+                                        {
+                                            (None, created) => created,
+                                            (Some(last_sent), _) => last_sent,
                                         };
                                         if last_message.elapsed() > CLIENT_STALE_THRESHOLD {
                                             return Either::A(
@@ -520,7 +509,6 @@ impl Server {
 
 struct Client {
     tx: hyper::body::Sender,
-    first_error: Option<Instant>,
     last_sent: Option<Instant>,
     id: u128,
     created: Instant,
@@ -533,7 +521,6 @@ impl Client {
 
         Client {
             tx: tx,
-            first_error: None,
             last_sent: None,
             created: Instant::now(),
             id: rng.gen_range(0, 9000),
@@ -627,29 +614,8 @@ impl Future for ImageWriterFuture {
 }
 
 impl Client {
-    // fn send_image_mjpeg_async(&mut self, image: Vec<u8>) -> Poll<(), ()> {
-    //     try_ready!(self.channel.0.poll_ready().map_err(|_| ()));
-    //     match self.channel.0.try_send(image) {
-    //         Ok(_) => Ok(Async::Ready(())),
-    //         Err(_) => Err(()),
-    //     }
-    // }
-
     fn send_chunk(&mut self, chunk: Chunk) -> Result<(), ()> {
         let result = self.tx.send_data(chunk);
-
-        match (&result, self.first_error) {
-            (Err(_), None) => {
-                // Store time when an error was first seen
-                self.first_error = Some(Instant::now());
-            }
-            (Ok(_), Some(_)) => {
-                // Clear error when write succeeds
-                self.first_error = None;
-            }
-            _ => {}
-        }
-
         result.or(Err(()))
     }
 }
