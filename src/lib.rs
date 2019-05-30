@@ -32,13 +32,15 @@ use tokio::timer::Interval;
 
 use rand::Rng;
 
-static DOWNLOAD_DELAY_NO_CLIENTS: Duration = Duration::from_secs(30);
-static DOWNLOAD_DELAY_CLIENTS: Duration = Duration::from_secs(1);
+static DOWNLOAD_DELAY_SLOW: Duration = Duration::from_secs(30);
+static DOWNLOAD_DELAY_FAST: Duration = Duration::from_secs(1);
 static DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(90);
 // if more than CLIENT_STALE_THRESHOLD elapsed since last successfull sent
 // message, kick the client out
 static CLIENT_STALE_THRESHOLD: Duration = Duration::from_secs(90);
+// Wait for this time before slowing down the downloads after last snapshot request
+static DOWNLOAD_FASTER_AFTER_SNAPSHOT_THRESHOLD: Duration = Duration::from_secs(90);
 static WIDTH: u32 = 1280;
 static HEIGHT: u32 = 960;
 lazy_static! {
@@ -66,6 +68,7 @@ pub struct ImageData {
     last_successful_image: Vec<u8>,
     last_success: Option<Instant>,
     last_error: Option<Instant>,
+    last_snapshot_sent: Option<Instant>,
 }
 
 #[derive(Debug, Fail)]
@@ -133,6 +136,7 @@ impl Server {
                 last_successful_image: image_jpeg_buffer,
                 last_success: Default::default(),
                 last_error: Default::default(),
+                last_snapshot_sent: Default::default(),
             }),
         }
     }
@@ -265,12 +269,22 @@ impl Server {
                 .then(move |_| self.clients.clone().lock())
                 .map_err(|_| panic!("clients lock tainted. Bug?"))
                 .and_then(move |clients| ok(clients.len()))
-                .then(move |num_clients| {
-                    let sleep = if num_clients > Ok(0) {
-                        DOWNLOAD_DELAY_CLIENTS
+                .join(
+                    self.image_data
+                        .clone()
+                        .read()
+                        .map_err(|_| panic!("image_data lock tainted. Bug?")),
+                )
+                .and_then(move |(num_clients, image_data)| {
+                    let recent_snapshot = match image_data.last_snapshot_sent {
+                        Some(sent) => sent.elapsed() < DOWNLOAD_FASTER_AFTER_SNAPSHOT_THRESHOLD,
+                        _ => false,
+                    };
+                    let sleep = if num_clients > 0 || recent_snapshot {
+                        DOWNLOAD_DELAY_FAST
                     } else {
-                        // no clients or error
-                        DOWNLOAD_DELAY_NO_CLIENTS
+                        // no clients and no recent snapshot --> slower update
+                        DOWNLOAD_DELAY_SLOW
                     };
                     tokio::timer::Delay::new(last_download + sleep)
                         .map_err(|_| DownloadError::Generic {})
@@ -472,9 +486,11 @@ impl Server {
             "/snapshot" => Either::B(
                 self.image_data
                     .clone()
-                    .read()
-                    .and_then(|image| {
-                        let image_bytes = (*image).last_successful_image.clone();
+                    .write()
+                    .map_err(|_| panic!("image_data lock tainted. Bug?"))
+                    .and_then(|mut image_data| {
+                        image_data.last_snapshot_sent = Some(Instant::now());
+                        let image_bytes = image_data.last_successful_image.clone();
                         ok(Response::builder()
                             .header("Cache-Control", "no-cache")
                             .header("Connection", "close")
