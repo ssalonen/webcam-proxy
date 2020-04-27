@@ -7,9 +7,9 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug unit tests in library 'rusty-foscam'",
+      "name": "Debug unit tests in library 'webcam-proxy'",
       "cargo": {
-        "args": ["test", "--no-run", "--lib", "--package=rusty-foscam"],
+        "args": ["test", "--no-run", "--lib", "--package=webcam-proxy"],
         "filter": {
           "kind": "lib"
         }
@@ -20,9 +20,14 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug executable 'rusty-foscam'",
+      "name": "Debug executable 'webcam-proxy'",
       "cargo": {
-        "args": ["build", "--bin=rusty-foscam", "--package=rusty-foscam"]
+        "args": [
+          "build",
+          "--bin=webcam-proxy",
+          "--package=webcam-proxy",
+          "_conf.example.toml"
+        ]
       },
       "args": [],
       "cwd": "${workspaceFolder}"
@@ -30,13 +35,13 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug unit tests in executable 'rusty-foscam'",
+      "name": "Debug unit tests in executable 'webcam-proxy'",
       "cargo": {
         "args": [
           "test",
           "--no-run",
-          "--bin=rusty-foscam",
-          "--package=rusty-foscam"
+          "--bin=webcam-proxy",
+          "--package=webcam-proxy"
         ],
         "filter": {
           "kind": "bin"
@@ -44,6 +49,13 @@
       },
       "args": [],
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug _config.example.toml",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/webcam-proxy",
+      "args": ["_config.example.toml"]
     }
   ]
 }

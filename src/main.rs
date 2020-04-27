@@ -5,6 +5,8 @@ extern crate lazy_static;
 use serde::Deserialize;
 use toml;
 
+use tracing::Level;
+
 use webcam_proxy::Server;
 
 use hyper::Uri;
@@ -52,11 +54,22 @@ lazy_static! {
         Server::new(download_uri, CONFIG.server.auth.clone())
     };
 }
-fn main() {
+async fn async_main() {
     // println!("{:?}", CONFIG);
 
-    let handle = SERVER.spawn(CONFIG.server.listen.parse().expect("Invalid server.listen"));
+    let handle = SERVER.run_server(CONFIG.server.listen.parse().expect("Invalid server.listen"));
+    handle.await;
     println!("Server up!");
-    handle.join().expect("Cannot join server thread!");
+}
+fn main() {
+    // a builder for `FmtSubscriber`.
+    let _subscriber = tracing_subscriber::fmt()
+        .with_max_level(Level::TRACE)
+        .init();
+
+    use tokio::runtime::Runtime;
+
+    let mut rt = Runtime::new().unwrap();
+    rt.block_on(async_main());
 }
 // curl http://localhost:3000/stream/1
