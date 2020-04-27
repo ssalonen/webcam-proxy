@@ -7,20 +7,11 @@ use failure::Fail;
 #[macro_use]
 extern crate lazy_static;
 
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
-// use futures::future::{err, ok};
-// use futures::prelude::*;
-// use futures::sync::mpsc::{channel, Receiver, Sender};
-// use futures::try_ready;
 use bytes::Bytes;
-use core::iter::FromIterator;
 use futures::prelude::*;
-use futures::stream::futures_unordered::FuturesUnordered;
-use futures::stream::select;
 use futures::StreamExt;
-//use futures::TryStreamExt;
-use futures_locks_pre::Mutex;
 use futures_locks_pre::RwLock;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
@@ -32,10 +23,9 @@ use rusttype::{Font, Scale};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
-use tokio::sync::{oneshot, watch};
 use tokio::time::{delay_for, timeout};
 
 // use tokio::prelude::*;
@@ -43,10 +33,6 @@ use tokio::time::{delay_for, timeout};
 static DOWNLOAD_DELAY: Duration = Duration::from_secs(1);
 static DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(90);
-// if more than CLIENT_STALE_THRESHOLD elapsed since last successfull sent
-// message, kick the client out
-//static CLIENT_STALE_THRESHOLD: Duration = Duration::from_secs(90);
-static CLIENT_STALE_THRESHOLD: Duration = Duration::from_secs(10);
 
 static WIDTH: u32 = 1280;
 static HEIGHT: u32 = 960;
@@ -59,20 +45,9 @@ lazy_static! {
     static ref WHITE_RGBA: Rgba<u8> = Rgba([255u8, 255u8, 255u8, 255u8]);
     static ref BLACK_RGBA: Rgba<u8> = Rgba([0u8, 0u8, 0u8, 255u8]);
 }
-static CLIENT_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 // type Clients = HashMap<usize, RwLock<Client>>;
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
-
-// #[derive(Debug)]
-// struct ClientKilledError {}
-// impl std::error::Error for ClientKilledError {}
-// impl Display for ClientKilledError {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-//         f.write_str("ClientKilledError")?;
-//         Ok(())
-//     }
-// }
 
 pub struct Server {
     // clients: Mutex<Clients>,
@@ -133,19 +108,6 @@ impl fmt::Display for ServerError {
     }
 }
 
-fn get_next_client_id() -> usize {
-    CLIENT_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
-// async fn update_single_client(
-//     image: Vec<u8>,
-//     client: &RwLock<Client>,
-// ) -> Result<(), SendError<Vec<u8>>> {
-//     let read_handle = client.clone().read().await;
-//     let client: &Client = &(*read_handle);
-//     client.dedicated_tx.broadcast(image)
-// }
-
 impl Server {
     pub fn new(download_url: Uri, auth: BTreeMap<String, String>) -> Server {
         use image::RgbImage;
@@ -171,39 +133,6 @@ impl Server {
             }),
         }
     }
-
-    // #[instrument]
-    // async fn remove_stale_clients(&'static self) {
-    //     debug!("Remove stale clients loop starting");
-    //     let mut clients = self.clients.clone().lock().await;
-    //     info!("Inspecting all {} clients for staleness", clients.len());
-    //     let mut stale_ids = Vec::new();
-    //     {
-    //         let mut read_handles = FuturesUnordered::from_iter(clients.iter().map(
-    //             |(client_id, client): (&usize, &RwLock<Client>)| {
-    //                 let read_future = (*client).read();
-    //                 async move { (*client_id, read_future.await) }
-    //             },
-    //         ));
-
-    //         // identify stale clients
-    //         while let Some((client_id, client)) = read_handles.next().await {
-    //             let last_message = match (client.last_sent, client.created) {
-    //                 (None, created) => created,
-    //                 (Some(last_sent), _) => last_sent,
-    //             };
-    //             if last_message.elapsed() > CLIENT_STALE_THRESHOLD {
-    //                 stale_ids.push(client_id);
-    //             } else {
-    //                 debug!("client {} not stale", (*client).id);
-    //             }
-    //         }
-    //     }
-    //     // remove all stale clients
-    //     for stale_id in stale_ids {
-    //         clients.remove(&stale_id);
-    //     }
-    // }
 
     #[instrument]
     async fn check_image_stale_async(&self) -> Result<(), image::ImageError> {
@@ -320,15 +249,6 @@ impl Server {
         Ok(())
     }
 
-    /*async fn add_client(&self, sender: hyper::body::Sender) {
-        // let image_data = self.image_data.clone().read().await;
-        let client = RwLock::new(Client::new(sender, self.broadcast_rx.clone()));
-        debug!("Client added");
-
-        let clients = self.clients.clone().lock().await;
-        clients.insert(get_next_client_id(), client.clone());
-    }*/
-
     #[instrument]
     async fn update_all_mjpeg(&self) {
         let image_data = self.image_data.clone().read().await;
@@ -415,11 +335,6 @@ impl Server {
                     .expect("Could not create response"))
             }
             "/stream" => {
-                // let (kill_tx, kill_rx) = oneshot::channel();
-                // let image_stream = select(
-                //     self.broadcast_rx.clone().map(Ok),
-                //     // kill_rx.into_stream().map_err(|_| ()),
-                // )
                 let image_stream = self
                     .broadcast_rx
                     .clone()
@@ -433,20 +348,6 @@ impl Server {
                             Bytes::from("\r\n"),
                         ])
                         .map(|bytes| -> Result<Bytes, Infallible> { Ok(bytes) })
-                        // if let Ok(image) = image {
-                        //     stream::iter(vec![
-                        //         Ok(Bytes::from("--BOUNDARY\r\n")),
-                        //         Ok(Bytes::from("Content-Type: image/jpeg\r\n")),
-                        //         Ok(Bytes::from(format!("Content-Length: {}\r\n", image.len()))),
-                        //         Ok(Bytes::from("\r\n")),
-                        //         Ok(Bytes::from(image)),
-                        //         Ok(Bytes::from("\r\n")),
-                        //     ])
-                        // } else {
-                        //     // No image -- end stream by emitting error
-                        //     info!("Client killed");
-                        //     stream::iter(vec![Err(ClientKilledError {})])
-                        // }
                     })
                     .flatten();
                 let body = Body::wrap_stream(image_stream);
@@ -468,37 +369,4 @@ impl Server {
                 .expect("Could not create response")),
         }
     }
-    // #[instrument]
-    // async fn add_client(&self, kill_tx: oneshot::Sender<Vec<u8>>) {
-    //     // let image_data = self.image_data.clone().read().await;
-    //     let client = RwLock::new(Client::new(kill_tx));
-    //     debug!("Client added");
-
-    //     let mut clients = self.clients.clone().lock().await;
-    //     clients.insert(get_next_client_id(), client.clone());
-    // }
 }
-
-// struct Client {
-//     _kill_tx: oneshot::Sender<Vec<u8>>,
-//     last_sent: Option<Instant>,
-//     id: usize,
-//     created: Instant,
-// }
-
-// impl Client {
-//     fn new(kill_tx: oneshot::Sender<Vec<u8>>) -> Client {
-//         Client {
-//             _kill_tx: kill_tx,
-//             last_sent: None,
-//             created: Instant::now(),
-//             id: get_next_client_id(),
-//         }
-//     }
-// }
-
-// impl fmt::Debug for Client {
-//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//         write!(f, "Client {{ id: {} }}", self.id)
-//     }
-// }
