@@ -1,6 +1,5 @@
 #![warn(unused_extern_crates)]
 use core::convert::Infallible;
-use core::fmt::Display;
 use std::time::{Duration, Instant};
 
 use failure::Fail;
@@ -28,8 +27,6 @@ use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::time::{delay_for, timeout};
 
-// use tokio::prelude::*;
-
 static DOWNLOAD_DELAY: Duration = Duration::from_secs(1);
 static DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(90);
@@ -45,12 +42,9 @@ lazy_static! {
     static ref WHITE_RGBA: Rgba<u8> = Rgba([255u8, 255u8, 255u8, 255u8]);
     static ref BLACK_RGBA: Rgba<u8> = Rgba([0u8, 0u8, 0u8, 255u8]);
 }
-
-// type Clients = HashMap<usize, RwLock<Client>>;
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
 
 pub struct Server {
-    // clients: Mutex<Clients>,
     download_url: Uri,
     image_data: RwLock<ImageData>,
     auth: BTreeMap<String, String>,
@@ -87,7 +81,6 @@ enum DownloadError {
     #[fail(display = "downloading error")]
     DownloadingError {},
 }
-// impl std::error::Error for DownloadError {}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ServerError();
@@ -119,7 +112,6 @@ impl Server {
             .expect("Could not create blank start image!");
         let (broadcast_tx, broadcast_rx) = watch::channel(image_jpeg_buffer.clone());
         Server {
-            // clients: Mutex::new(HashMap::new()),
             download_url,
             auth,
             broadcast_rx,
@@ -267,12 +259,7 @@ impl Server {
         let http_server = hyper::Server::bind(&listen).serve(make_service_fn(
             move |_socket: &AddrStream| async move { Ok::<_, Infallible>(service_fn(handler)) },
         ));
-        let maintenance = async move {
-            loop {
-                // self.remove_stale_clients().await;
-                delay_for(Duration::from_secs(1)).await;
-            }
-        };
+
         let stale_monitor = async move {
             loop {
                 self.check_image_stale_async().await.unwrap();
@@ -282,7 +269,7 @@ impl Server {
         };
 
         let download_loop = self.download_picture_async_loop(http_client);
-        future::join4(http_server, maintenance, stale_monitor, download_loop)
+        future::join3(http_server, stale_monitor, download_loop)
     }
 
     #[instrument]
@@ -351,7 +338,6 @@ impl Server {
                     })
                     .flatten();
                 let body = Body::wrap_stream(image_stream);
-                // self.add_client(kill_tx).await;
                 Ok(Response::builder()
                     .header("Cache-Control", "no-cache")
                     .header("Connection", "close")
