@@ -2,6 +2,10 @@
 # HOST=myhost.com
 include .makerc
 
+ifndef HOST
+$(error HOST is not set in .makerc)
+endif
+
 .PHONY: build-release
 build-release:
 	cargo build --release

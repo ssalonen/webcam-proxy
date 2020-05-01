@@ -3,7 +3,6 @@
 #[macro_use]
 extern crate lazy_static;
 use serde::Deserialize;
-use toml;
 
 use tracing::Level;
 
@@ -63,7 +62,7 @@ async fn async_main() {
 }
 fn main() {
     // a builder for `FmtSubscriber`.
-    let _subscriber = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_max_level(Level::TRACE)
         .init();
 
