@@ -66,8 +66,6 @@ pub struct ImageData {
     last_successful_image_raw: Vec<u8>,
     last_successful_image: Vec<u8>,
     last_success: Option<Instant>,
-    last_error: Option<Instant>,
-    last_snapshot_sent: Option<Instant>,
 }
 
 #[derive(Debug, Fail)]
@@ -80,25 +78,6 @@ enum DownloadError {
     Timeout {},
     #[fail(display = "downloading error")]
     DownloadingError {},
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ServerError();
-
-impl std::error::Error for ServerError {
-    fn description(&self) -> &str {
-        "Generic error"
-    }
-
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-}
-
-impl fmt::Display for ServerError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Generic error occurred")
-    }
 }
 
 impl Server {
@@ -120,8 +99,6 @@ impl Server {
                 last_successful_image_raw: image_jpeg_buffer.clone(),
                 last_successful_image: image_jpeg_buffer,
                 last_success: Default::default(),
-                last_error: Default::default(),
-                last_snapshot_sent: Default::default(),
             }),
         }
     }
@@ -159,6 +136,9 @@ impl Server {
             last_successful_image.truncate(0);
             let mut encoder = JPEGEncoder::new(&mut image_data.last_successful_image);
             encoder.encode(&image.to_rgb(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
+            self.broadcast_tx
+                .broadcast(image_data.last_successful_image.clone())
+                .unwrap();
         }
         Ok(())
     }
@@ -181,7 +161,6 @@ impl Server {
         if let Err(e) = self._download_picture_async(http_client).await {
             {
                 let mut image_data = self.image_data.clone().write().await;
-                image_data.last_error = Some(Instant::now());
             }
             Err(e)
         } else {
@@ -227,8 +206,6 @@ impl Server {
             Ok(Ok(body_data)) => Ok(body_data),
         }?;
         debug!("Body consumed, storing image_data");
-
-        // let mut image_data = try_ready!(self.image_data.write().poll().or(Err(())));
         {
             let mut image_data = self.image_data.clone().write().await;
             image_data.last_successful_image_raw = body_data.clone();
@@ -276,7 +253,7 @@ impl Server {
     pub async fn serve(
         &'static self,
         request: Request<Body>,
-    ) -> Result<Response<Body>, ServerError> {
+    ) -> Result<Response<Body>, Infallible> {
         debug!("headers: {:?}", request.headers());
         // Extract channel from uri path (last segment)
         if let Some(query) = request.uri().query() {
@@ -295,7 +272,6 @@ impl Server {
                     .body(Body::from("Unauthorized"))
                     .expect("Could not create response"));
             }
-        // debug!("parsedArgs {:?}", parsed_args);
         } else {
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
@@ -307,8 +283,7 @@ impl Server {
             "/snapshot" => {
                 debug!("Acquiring image_data lock");
                 let image_bytes = {
-                    let mut image_data = self.image_data.clone().write().await;
-                    image_data.last_snapshot_sent = Some(Instant::now());
+                    let image_data = self.image_data.clone().read().await;
                     image_data.last_successful_image.clone()
                 };
                 debug!("Acquired image_data lock");
