@@ -1,7 +1,5 @@
 #![warn(unused_extern_crates)]
 use core::convert::Infallible;
-use std::time::{Duration, Instant};
-
 use failure::Fail;
 #[macro_use]
 extern crate lazy_static;
@@ -9,9 +7,12 @@ extern crate lazy_static;
 use tracing::{debug, instrument};
 
 use bytes::Bytes;
+use chrono::prelude::*;
+use core::time::Duration as StdDuration;
 use futures::prelude::*;
 use futures::StreamExt;
 use futures_locks_pre::RwLock;
+use humantime::format_duration;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
 use image::jpeg::JPEGEncoder;
@@ -23,13 +24,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use time::Duration as OldDuration;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::time::{delay_for, timeout};
 
-static DOWNLOAD_DELAY: Duration = Duration::from_secs(1);
-static DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
-static IMAGE_STALE_THRESHOLD: Duration = Duration::from_secs(90);
+static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(1);
+static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
 static WIDTH: u32 = 1280;
 static HEIGHT: u32 = 960;
@@ -65,7 +67,7 @@ impl fmt::Debug for Server {
 pub struct ImageData {
     last_successful_image_raw: Vec<u8>,
     last_successful_image: Vec<u8>,
-    last_success: Option<Instant>,
+    last_success: Option<DateTime<Local>>,
 }
 
 #[derive(Debug, Fail)]
@@ -105,12 +107,18 @@ impl Server {
 
     #[instrument]
     async fn check_image_stale_async(&self) -> Result<(), image::ImageError> {
-        let stale = {
+        let (last_download, stale) = {
             let image_data = self.image_data.clone().read().await;
-            match image_data.last_success {
-                Some(last_success) => last_success.elapsed() > IMAGE_STALE_THRESHOLD,
-                _ => true,
-            }
+            (
+                image_data.last_success,
+                match image_data.last_success {
+                    Some(last_success) => {
+                        Local::now().signed_duration_since(last_success)
+                            > OldDuration::from_std(IMAGE_STALE_THRESHOLD).unwrap()
+                    }
+                    _ => true,
+                },
+            )
         };
         debug!("Image stale: {:?}", stale);
         if stale {
@@ -123,6 +131,19 @@ impl Server {
                 Rect::at(500, 500).of_size(100, 100),
                 *BLACK_RGBA,
             );
+            let stale_text: String = match last_download {
+                Some(instant) => format!(
+                    "STALE. Last image {} ago at {}",
+                    format_duration(
+                        Local::now()
+                            .signed_duration_since(instant)
+                            .to_std()
+                            .unwrap()
+                    ),
+                    instant.format("%Y-%m-%d %H:%M:%S").to_string()
+                ),
+                None => "STALE".to_owned(),
+            };
             draw_text_mut(
                 &mut image,
                 *WHITE_RGBA,
@@ -130,7 +151,7 @@ impl Server {
                 500,
                 Scale::uniform(24.0),
                 &FONT,
-                "STALE!",
+                &stale_text,
             );
             let last_successful_image = &mut (*image_data).last_successful_image;
             last_successful_image.truncate(0);
@@ -155,21 +176,6 @@ impl Server {
 
     #[instrument]
     async fn download_picture_async(
-        &'static self,
-        http_client: &HttpClient,
-    ) -> Result<(), DownloadError> {
-        if let Err(e) = self._download_picture_async(http_client).await {
-            {
-                let mut image_data = self.image_data.clone().write().await;
-            }
-            Err(e)
-        } else {
-            Ok(())
-        }
-    }
-
-    #[instrument]
-    async fn _download_picture_async(
         &'static self,
         http_client: &HttpClient,
     ) -> Result<(), DownloadError> {
@@ -210,7 +216,7 @@ impl Server {
             let mut image_data = self.image_data.clone().write().await;
             image_data.last_successful_image_raw = body_data.clone();
             image_data.last_successful_image = body_data;
-            image_data.last_success = Some(Instant::now());
+            image_data.last_success = Some(Local::now());
         }
         debug!("Image data consumed");
 
@@ -241,7 +247,7 @@ impl Server {
             loop {
                 self.check_image_stale_async().await.unwrap();
                 self.update_all_mjpeg().await;
-                delay_for(Duration::from_secs(5)).await;
+                delay_for(std::time::Duration::from_secs(5)).await;
             }
         };
 

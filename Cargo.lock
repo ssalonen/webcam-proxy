@@ -460,6 +460,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd179ae861f0c2e53da70d892f5f3029f9594be0c41dc5269cd371691b1dc2f9"
 
 [[package]]
+name = "humantime"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b6c53306532d3c8e8087b44e6580e10db51a023cf9b433cea2ac38066b92da"
+
+[[package]]
 name = "hyper"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1541,9 +1547,11 @@ name = "webcam-proxy"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "chrono",
  "failure",
  "futures",
  "futures-locks-pre",
+ "humantime",
  "hyper",
  "hyper-tls",
  "image",
@@ -1552,6 +1560,7 @@ dependencies = [
  "rand",
  "rusttype",
  "serde",
+ "time",
  "tokio",
  "toml",
  "tracing",
