@@ -1,14 +1,12 @@
 #![warn(unused_extern_crates)]
-use core::convert::Infallible;
-use failure::Fail;
 #[macro_use]
 extern crate lazy_static;
 
-use tracing::{debug, instrument};
-
 use bytes::Bytes;
 use chrono::prelude::*;
+use core::convert::Infallible;
 use core::time::Duration as StdDuration;
+use failure::Fail;
 use futures::prelude::*;
 use futures::StreamExt;
 use futures_locks_pre::RwLock;
@@ -23,16 +21,21 @@ use rusttype::{Font, Scale};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use time::Duration as OldDuration;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::time::{delay_for, timeout};
+use tracing::{debug, info, instrument};
 
+// TODO: adjust if no clients (no active streams and some time since last snapshot)
 static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(1);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
+// FIXME: not static over all apps
+static STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static WIDTH: u32 = 1280;
 static HEIGHT: u32 = 960;
 lazy_static! {
@@ -45,6 +48,48 @@ lazy_static! {
     static ref BLACK_RGBA: Rgba<u8> = Rgba([0u8, 0u8, 0u8, 255u8]);
 }
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
+
+#[derive(Default)]
+pub struct StreamTracker<S, O, E>(S)
+where
+    S: Stream<Item = Result<O, E>> + Send + Sync + 'static;
+
+impl<S, O, E> StreamTracker<S, O, E>
+where
+    S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
+{
+    pub fn new(stream: S) -> Self {
+        STREAMS_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        info!("{}", "new stream tracker");
+        Self(stream)
+    }
+}
+
+impl<S, O, E> Drop for StreamTracker<S, O, E>
+where
+    S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        STREAMS_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        info!("{}", "drop stream tracker");
+    }
+}
+
+impl<S, O, E> Stream for StreamTracker<S, O, E>
+where
+    S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
+{
+    type Item = Result<O, E>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        // safe since we never move nor leak &mut
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        inner.poll_next(cx)
+    }
+}
 
 pub struct Server {
     download_url: Uri,
@@ -67,6 +112,7 @@ impl fmt::Debug for Server {
 pub struct ImageData {
     last_successful_image_raw: Vec<u8>,
     last_successful_image: Vec<u8>,
+    stale: bool,
     last_success: Option<DateTime<Local>>,
 }
 
@@ -101,6 +147,7 @@ impl Server {
                 last_successful_image_raw: image_jpeg_buffer.clone(),
                 last_successful_image: image_jpeg_buffer,
                 last_success: Default::default(),
+                stale: false,
             }),
         }
     }
@@ -124,6 +171,7 @@ impl Server {
         if stale {
             let mut image_data = self.image_data.clone().write().await;
             let image_bits = image_data.last_successful_image_raw.clone();
+            image_data.stale = true;
             let mut image =
                 image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
             draw_filled_rect_mut(
@@ -160,6 +208,13 @@ impl Server {
             self.broadcast_tx
                 .broadcast(image_data.last_successful_image.clone())
                 .unwrap();
+        } else {
+            // Opportunistic -- acquire write lock only when needed
+            let stale = self.image_data.clone().read().await.stale;
+            if stale {
+                let mut image_data = self.image_data.clone().write().await;
+                image_data.stale = false;
+            }
         }
         Ok(())
     }
@@ -169,8 +224,18 @@ impl Server {
         loop {
             // We ignore download errors, could have something
             // more fancy here, e.g. exponential retry on errors
+            let before = std::time::Instant::now();
             let _ = self.download_picture_async(&http_client).await;
-            delay_for(DOWNLOAD_DELAY).await;
+            let after = std::time::Instant::now();
+            if after > before + DOWNLOAD_DELAY {
+                // Download immediately again, no delay
+            } else {
+                delay_for(before + DOWNLOAD_DELAY - after).await;
+            }
+            info!(
+                "STREAMS_ACTIVE: {}",
+                STREAMS_ACTIVE.fetch_add(0, Ordering::SeqCst)
+            );
         }
     }
 
@@ -303,9 +368,9 @@ impl Server {
                     .expect("Could not create response"))
             }
             "/stream" => {
-                let image_stream = self
-                    .broadcast_rx
-                    .clone()
+                let rx_handle = self.broadcast_rx.clone();
+                // let weak_ref = std::rc::Weak(std::rc::Rc::new(rx_handle));
+                let image_stream = rx_handle
                     .map(|image| {
                         stream::iter(vec![
                             Bytes::from("--BOUNDARY\r\n"),
@@ -318,7 +383,8 @@ impl Server {
                         .map(|bytes| -> Result<Bytes, Infallible> { Ok(bytes) })
                     })
                     .flatten();
-                let body = Body::wrap_stream(image_stream);
+                let body =
+                    Body::wrap_stream::<_, Bytes, Infallible>(StreamTracker::new(image_stream));
                 Ok(Response::builder()
                     .header("Cache-Control", "no-cache")
                     .header("Connection", "close")

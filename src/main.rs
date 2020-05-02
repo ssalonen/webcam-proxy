@@ -62,9 +62,7 @@ async fn async_main() {
 }
 fn main() {
     // a builder for `FmtSubscriber`.
-    tracing_subscriber::fmt()
-        .with_max_level(Level::TRACE)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     use tokio::runtime::Runtime;
 
