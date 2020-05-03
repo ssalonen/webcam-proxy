@@ -6,7 +6,6 @@ use bytes::Bytes;
 use chrono::prelude::*;
 use core::convert::Infallible;
 use core::time::Duration as StdDuration;
-use failure::Fail;
 use futures::prelude::*;
 use futures::StreamExt;
 use futures_locks_pre::RwLock;
@@ -23,6 +22,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use thiserror::Error;
 use time::Duration as OldDuration;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -116,16 +116,14 @@ pub struct ImageData {
     last_success: Option<DateTime<Local>>,
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 enum DownloadError {
-    #[fail(display = "generic download error")]
-    Generic {},
-    #[fail(display = "nonsuccesfull http status: {}", status)]
+    #[error("nonsuccesfull http status: {status:?}")]
     NonSuccessfullStatus { status: u16 },
-    #[fail(display = "download timeout")]
-    Timeout {},
-    #[fail(display = "downloading error")]
-    DownloadingError {},
+    #[error("download timeout")]
+    Timeout,
+    #[error("generic download error")]
+    DownloadingError,
 }
 
 impl Server {
@@ -247,7 +245,7 @@ impl Server {
         let response = http_client
             .get(self.download_url.clone())
             .await
-            .map_err(|_| DownloadError::Generic {})?;
+            .map_err(|_| DownloadError::DownloadingError)?;
 
         let (parts, body) = response.into_parts();
         let body: hyper::Body = match parts.status {
@@ -272,8 +270,8 @@ impl Server {
         )
         .await
         {
-            Err(_) => Err(DownloadError::Timeout {}),
-            Ok(Err(_)) => Err(DownloadError::DownloadingError {}),
+            Err(_) => Err(DownloadError::Timeout),
+            Ok(Err(_)) => Err(DownloadError::DownloadingError),
             Ok(Ok(body_data)) => Ok(body_data),
         }?;
         debug!("Body consumed, storing image_data");
