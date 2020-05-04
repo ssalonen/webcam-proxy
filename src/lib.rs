@@ -35,8 +35,6 @@ static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
-// FIXME: not static over all apps
-static STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 //static WIDTH: u32 = 1280;
 //static HEIGHT: u32 = 960;
 static WIDTH: u32 = 1920;
@@ -53,7 +51,7 @@ lazy_static! {
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
 
 #[derive(Default)]
-pub struct StreamTracker<S, O, E>(S)
+pub struct StreamTracker<S, O, E>(Arc<AtomicUsize>, S)
 where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static;
 
@@ -61,10 +59,10 @@ impl<S, O, E> StreamTracker<S, O, E>
 where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
 {
-    pub fn new(stream: S) -> Self {
-        STREAMS_ACTIVE.fetch_add(1, Ordering::SeqCst);
+    pub fn new(counter: Arc<AtomicUsize>, stream: S) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
         info!("{}", "new stream tracker");
-        Self(stream)
+        Self(counter, stream)
     }
 }
 
@@ -73,7 +71,7 @@ where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        STREAMS_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::SeqCst);
         info!("{}", "drop stream tracker");
     }
 }
@@ -89,7 +87,7 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         // safe since we never move nor leak &mut
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.1) };
         inner.poll_next(cx)
     }
 }
@@ -100,6 +98,7 @@ pub struct Server {
     auth: BTreeMap<String, String>,
     broadcast_rx: Receiver<Vec<u8>>,
     broadcast_tx: Sender<Vec<u8>>,
+    active_streams: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for Server {
@@ -143,6 +142,7 @@ pub struct ImageData {
     last_successful_image_raw: Vec<u8>,
     last_successful_image: Vec<u8>,
     image_hash: Option<ImageHash>,
+    hash_diff: Option<u32>,
     stale: bool,
     last_success: Option<DateTime<Local>>,
 }
@@ -176,9 +176,11 @@ impl Server {
                 last_successful_image_raw: image_jpeg_buffer.clone(),
                 last_successful_image: image_jpeg_buffer,
                 image_hash: Default::default(),
+                hash_diff: Default::default(),
                 last_success: Default::default(),
                 stale: false,
             }),
+            active_streams: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -249,8 +251,8 @@ impl Server {
                 delay_for(before + DOWNLOAD_DELAY - after).await;
             }
             info!(
-                "STREAMS_ACTIVE: {}",
-                STREAMS_ACTIVE.fetch_add(0, Ordering::SeqCst)
+                "Active streams: {}",
+                self.active_streams.fetch_add(0, Ordering::SeqCst)
             );
         }
     }
@@ -317,6 +319,7 @@ impl Server {
             encode_image(&image, &mut image_data.last_successful_image)
                 .map_err(|_| DownloadError::DownloadingError)?;
             image_data.image_hash = Some(hash);
+            image_data.hash_diff = Some(hash_diff);
         }
         debug!("Image data consumed");
         self.update_all_mjpeg().await;
@@ -417,8 +420,10 @@ impl Server {
                         .map(|bytes| -> Result<Bytes, Infallible> { Ok(bytes) })
                     })
                     .flatten();
-                let body =
-                    Body::wrap_stream::<_, Bytes, Infallible>(StreamTracker::new(image_stream));
+                let body = Body::wrap_stream::<_, Bytes, Infallible>(StreamTracker::new(
+                    self.active_streams.clone(),
+                    image_stream,
+                ));
                 Ok(Response::builder()
                     .header("Cache-Control", "no-cache")
                     .header("Connection", "close")
