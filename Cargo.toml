@@ -23,14 +23,13 @@ tracing-futures = '0.2.4'
 tracing-subscriber = '0.2.5'
 humantime = '2.0.0'
 chrono = '0.4.11'
-time = '0.1'
+time = '0.1' # sync with chrono
+lab = '0.7.2'
+img_hash = '3.0'
 
 [dependencies.tokio]
-version = '0.2.19'
-features = [
-    'time',
-    'stream',
-]
+version = '0.2.20'
+features = ['time', 'stream']
 
 [dependencies.serde]
 version = '1.0.105'

@@ -16,6 +16,7 @@ use image::jpeg::JPEGEncoder;
 use image::Rgba;
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
+use img_hash::{HasherConfig, ImageHash};
 use rusttype::{Font, Scale};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -30,14 +31,16 @@ use tokio::time::{delay_for, timeout};
 use tracing::{debug, info, instrument};
 
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
-static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(1);
+static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
 // FIXME: not static over all apps
 static STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
-static WIDTH: u32 = 1280;
-static HEIGHT: u32 = 960;
+//static WIDTH: u32 = 1280;
+//static HEIGHT: u32 = 960;
+static WIDTH: u32 = 1920;
+static HEIGHT: u32 = 1080;
 lazy_static! {
     static ref FONT: Font<'static> = {
         let font_data: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
@@ -79,7 +82,7 @@ impl<S, O, E> Stream for StreamTracker<S, O, E>
 where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
 {
-    type Item = Result<O, E>;
+    type Item = S::Item;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -109,9 +112,37 @@ impl fmt::Debug for Server {
     }
 }
 
+fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32) {
+    draw_filled_rect_mut(
+        image,
+        Rect::at(0, (HEIGHT - 24 * (row + 1)) as i32).of_size(WIDTH, 24),
+        *BLACK_RGBA,
+    );
+    draw_text_mut(
+        image,
+        *WHITE_RGBA,
+        0,
+        HEIGHT - 24 * (row + 1),
+        Scale::uniform(24.0),
+        &FONT,
+        &text,
+    );
+}
+
+fn encode_image(
+    image: &image::DynamicImage,
+    dest_image_buf: &mut Vec<u8>,
+) -> Result<(), image::ImageError> {
+    dest_image_buf.truncate(0);
+    let mut encoder = JPEGEncoder::new(dest_image_buf);
+    encoder.encode(&image.to_rgb(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
+    Ok(())
+}
+
 pub struct ImageData {
     last_successful_image_raw: Vec<u8>,
     last_successful_image: Vec<u8>,
+    image_hash: Option<ImageHash>,
     stale: bool,
     last_success: Option<DateTime<Local>>,
 }
@@ -144,6 +175,7 @@ impl Server {
             image_data: RwLock::new(ImageData {
                 last_successful_image_raw: image_jpeg_buffer.clone(),
                 last_successful_image: image_jpeg_buffer,
+                image_hash: Default::default(),
                 last_success: Default::default(),
                 stale: false,
             }),
@@ -167,45 +199,30 @@ impl Server {
         };
         debug!("Image stale: {:?}", stale);
         if stale {
-            let mut image_data = self.image_data.clone().write().await;
-            let image_bits = image_data.last_successful_image_raw.clone();
-            image_data.stale = true;
-            let mut image =
-                image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
-            draw_filled_rect_mut(
-                &mut image,
-                Rect::at(500, 500).of_size(100, 100),
-                *BLACK_RGBA,
-            );
-            let stale_text: String = match last_download {
-                Some(instant) => format!(
-                    "STALE. Last image {} ago at {}",
-                    format_duration(
-                        Local::now()
-                            .signed_duration_since(instant)
-                            .to_std()
-                            .unwrap()
+            {
+                let mut image_data = self.image_data.clone().write().await;
+                let image_bits = image_data.last_successful_image_raw.clone();
+                image_data.stale = true;
+                let mut image =
+                    image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
+                let stale_text: String = match last_download {
+                    Some(instant) => format!(
+                        "STALE. Last image {} ago at {}",
+                        format_duration(
+                            Local::now()
+                                .signed_duration_since(instant)
+                                .to_std()
+                                .unwrap()
+                        ),
+                        instant.format("%Y-%m-%d %H:%M:%S").to_string()
                     ),
-                    instant.format("%Y-%m-%d %H:%M:%S").to_string()
-                ),
-                None => "STALE".to_owned(),
-            };
-            draw_text_mut(
-                &mut image,
-                *WHITE_RGBA,
-                500,
-                500,
-                Scale::uniform(24.0),
-                &FONT,
-                &stale_text,
-            );
-            let last_successful_image = &mut (*image_data).last_successful_image;
-            last_successful_image.truncate(0);
-            let mut encoder = JPEGEncoder::new(&mut image_data.last_successful_image);
-            encoder.encode(&image.to_rgb(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
-            self.broadcast_tx
-                .broadcast(image_data.last_successful_image.clone())
-                .unwrap();
+                    None => "STALE".to_owned(),
+                };
+                draw_text(&mut image, &stale_text, 0);
+                // let last_successful_image = &mut (*image_data).last_successful_image;
+                encode_image(&image, &mut image_data.last_successful_image)?;
+            }
+            self.update_all_mjpeg().await;
         } else {
             // Opportunistic -- acquire write lock only when needed
             let stale = self.image_data.clone().read().await.stale;
@@ -278,11 +295,29 @@ impl Server {
         {
             let mut image_data = self.image_data.clone().write().await;
             image_data.last_successful_image_raw = body_data.clone();
-            image_data.last_successful_image = body_data;
             image_data.last_success = Some(Local::now());
+            let mut image =
+                image::load_from_memory_with_format(&body_data, image::ImageFormat::Jpeg)
+                    .map_err(|_| DownloadError::DownloadingError)?;
+            let hasher = HasherConfig::new().hash_size(16, 16).to_hasher();
+            let hash = hasher.hash_image(&image);
+            let hash_diff = match &image_data.image_hash {
+                Some(prev_hash) => prev_hash.dist(&hash),
+                None => 999,
+            };
+            let last_download_utc: DateTime<Utc> = image_data.last_success.unwrap().into();
+            let text: String = format!(
+                "{}: {} (diff: {})",
+                last_download_utc.format("%Y-%m-%d %H:%M:%SZ").to_string(),
+                hash.to_base64(),
+                hash_diff
+            );
+            draw_text(&mut image, &text, 0);
+            encode_image(&image, &mut image_data.last_successful_image)
+                .map_err(|_| DownloadError::DownloadingError)?;
+            image_data.image_hash = Some(hash);
         }
         debug!("Image data consumed");
-
         self.update_all_mjpeg().await;
         Ok(())
     }

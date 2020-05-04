@@ -1,0 +1,8 @@
+[server]
+listen = "127.0.0.1:3000"
+
+[server.auth]
+admin = "admin"
+
+[webcam]
+url = "https://finland.fi/wp-content/plugins/thisisfinland/inc/webcam/webcam.php?id=2"
