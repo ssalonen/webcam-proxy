@@ -203,6 +203,7 @@ impl Server {
                 let mut image_data = self.image_data.clone().write().await;
                 let image_bits = image_data.last_successful_image_raw.clone();
                 image_data.stale = true;
+                image_data.image_hash = None;
                 let mut image =
                     image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
                 let stale_text: String = match last_download {
