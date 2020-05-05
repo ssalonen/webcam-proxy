@@ -29,7 +29,7 @@ img_hash = '3.0'
 
 [dependencies.tokio]
 version = '0.2.20'
-features = ['time', 'stream']
+features = ['time', 'stream', 'fs']
 
 [dependencies.serde]
 version = '1.0.105'

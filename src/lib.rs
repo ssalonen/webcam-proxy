@@ -21,6 +21,7 @@ use rusttype::{Font, Scale};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -35,10 +36,10 @@ static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
-//static WIDTH: u32 = 1280;
-//static HEIGHT: u32 = 960;
-static WIDTH: u32 = 1920;
-static HEIGHT: u32 = 1080;
+static WIDTH: u32 = 1280;
+static HEIGHT: u32 = 720;
+//static WIDTH: u32 = 1920;
+//static HEIGHT: u32 = 1080;
 lazy_static! {
     static ref FONT: Font<'static> = {
         let font_data: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
@@ -99,6 +100,7 @@ pub struct Server {
     broadcast_rx: Receiver<Vec<u8>>,
     broadcast_tx: Sender<Vec<u8>>,
     active_streams: Arc<AtomicUsize>,
+    save_path: Option<&'static Path>,
 }
 
 impl fmt::Debug for Server {
@@ -158,7 +160,11 @@ enum DownloadError {
 }
 
 impl Server {
-    pub fn new(download_url: Uri, auth: BTreeMap<String, String>) -> Server {
+    pub fn new(
+        download_url: Uri,
+        auth: BTreeMap<String, String>,
+        save_path: Option<&'static Path>,
+    ) -> Server {
         use image::RgbImage;
         let image_buffer = RgbImage::new(WIDTH, HEIGHT);
         let mut image_jpeg_buffer = vec![];
@@ -181,6 +187,7 @@ impl Server {
                 stale: false,
             }),
             active_streams: Arc::new(AtomicUsize::new(0)),
+            save_path,
         }
     }
 
@@ -306,7 +313,7 @@ impl Server {
             let hash = hasher.hash_image(&image);
             let hash_diff = match &image_data.image_hash {
                 Some(prev_hash) => prev_hash.dist(&hash),
-                None => 999,
+                None => 9999,
             };
             let last_download_utc: DateTime<Utc> = image_data.last_success.unwrap().into();
             let text: String = format!(
@@ -328,8 +335,10 @@ impl Server {
 
     #[instrument]
     async fn update_all_mjpeg(&self) {
-        let image_data = self.image_data.clone().read().await;
-        let image = image_data.last_successful_image.clone();
+        let image = {
+            let image_data = self.image_data.clone().read().await;
+            image_data.last_successful_image.clone()
+        };
         self.broadcast_tx.broadcast(image).unwrap();
     }
 
@@ -353,8 +362,59 @@ impl Server {
             }
         };
 
+        let image_storer_rx = self.broadcast_rx.clone();
+        let store_images = async move {
+            use tokio::io::AsyncWriteExt;
+            if let Some(save_path) = self.save_path {
+                info!("Starting saving images");
+                let mut image_stream =
+                    tokio::time::throttle(std::time::Duration::from_secs(10), image_storer_rx);
+                while let Some(image) = image_stream.next().await {
+                    info!("Got image...saving");
+                    let (last_success, stale, hash_diff) = {
+                        let image_data = self.image_data.clone().read().await;
+                        info!("Got lock...saving");
+                        (
+                            image_data.last_success,
+                            image_data.stale,
+                            image_data.hash_diff,
+                        )
+                    };
+                    if let Some(last_success) = last_success {
+                        info!("Got successful image...saving");
+                        if !stale {
+                            info!("not stale...saving");
+                            let last_success_utc: DateTime<Utc> = last_success.into();
+                            let folder = last_success_utc.format("%Y-%V").to_string();
+                            let filename = format!(
+                                "{hash_diff:04}_{isodate}.jpg",
+                                hash_diff = hash_diff.unwrap(),
+                                isodate = last_success_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+                            );
+                            let folder_abs = save_path.join(folder);
+                            let folder_create = tokio::fs::create_dir(&folder_abs).await;
+                            if let Ok(_) = folder_create {
+                                info!("ok folder created");
+                            } else if let Err(folder_create) = folder_create {
+                                info!("err creating folder {}", folder_create);
+                            }
+                            let file = tokio::fs::File::create(folder_abs.join(filename)).await;
+                            if let Ok(mut file) = file {
+                                info!("ok file");
+                                if let Err(err) = file.write_all(&image).await {
+                                    info!("Error writing file {}", err);
+                                }
+                            } else if let Err(file) = file {
+                                info!("err file {}", file);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
         let download_loop = self.download_picture_async_loop(http_client);
-        future::join3(http_server, stale_monitor, download_loop)
+        future::join4(http_server, stale_monitor, download_loop, store_images)
     }
 
     #[instrument]
