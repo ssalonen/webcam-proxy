@@ -225,8 +225,10 @@ impl Server {
             // We ignore download errors, could have something
             // more fancy here, e.g. exponential retry on errors
             let before = std::time::Instant::now();
+            debug!("Downloading...");
             let _ = self.download_picture_async(&http_client).await;
             let after = std::time::Instant::now();
+            debug!("Downloaded in {} s.", (after - before).as_secs());
             if after > before + DOWNLOAD_DELAY {
                 // Download immediately again, no delay
             } else {
