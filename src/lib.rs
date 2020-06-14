@@ -395,7 +395,7 @@ impl Server {
                             );
                             let folder_abs = save_path.join(folder);
                             let folder_create = tokio::fs::create_dir(&folder_abs).await;
-                            if let Ok(_) = folder_create {
+                            if folder_create.is_ok() {
                                 info!("ok folder created");
                             } else if let Err(folder_create) = folder_create {
                                 info!("err creating folder {}", folder_create);

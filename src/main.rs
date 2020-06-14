@@ -4,7 +4,7 @@
 extern crate lazy_static;
 use serde::Deserialize;
 
-use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 use webcam_proxy::Server;
 
@@ -71,9 +71,9 @@ async fn async_main() {
 }
 fn main() {
     // a builder for `FmtSubscriber`.
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .init();
+    let filter = EnvFilter::from_default_env();
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     use tokio::runtime::Runtime;
 
