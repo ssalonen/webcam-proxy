@@ -31,6 +31,7 @@ pub struct ConfigServer {
 #[derive(Deserialize, Debug)]
 pub struct ConfigWebcam {
     url: String,
+    save_path: Option<String>,
 }
 
 lazy_static! {
@@ -50,7 +51,15 @@ lazy_static! {
     };
     static ref SERVER: Server = {
         let download_uri = Uri::from_str(&CONFIG.webcam.url).expect("Invalid webcam URL");
-        Server::new(download_uri, CONFIG.server.auth.clone())
+        Server::new(
+            download_uri,
+            CONFIG.server.auth.clone(),
+            CONFIG
+                .webcam
+                .save_path
+                .as_ref()
+                .map(|p: &String| Path::new(p)),
+        )
     };
 }
 async fn async_main() {

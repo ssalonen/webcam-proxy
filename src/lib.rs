@@ -6,7 +6,6 @@ use bytes::Bytes;
 use chrono::prelude::*;
 use core::convert::Infallible;
 use core::time::Duration as StdDuration;
-use failure::Fail;
 use futures::prelude::*;
 use futures::StreamExt;
 use futures_locks_pre::RwLock;
@@ -17,12 +16,15 @@ use image::jpeg::JPEGEncoder;
 use image::Rgba;
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
+use img_hash::{HasherConfig, ImageHash};
 use rusttype::{Font, Scale};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use thiserror::Error;
 use time::Duration as OldDuration;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -30,14 +32,14 @@ use tokio::time::{delay_for, timeout};
 use tracing::{debug, info, instrument};
 
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
-static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(1);
+static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
-// FIXME: not static over all apps
-static STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static WIDTH: u32 = 1280;
-static HEIGHT: u32 = 960;
+static HEIGHT: u32 = 720;
+//static WIDTH: u32 = 1920;
+//static HEIGHT: u32 = 1080;
 lazy_static! {
     static ref FONT: Font<'static> = {
         let font_data: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
@@ -50,7 +52,7 @@ lazy_static! {
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
 
 #[derive(Default)]
-pub struct StreamTracker<S, O, E>(S)
+pub struct StreamTracker<S, O, E>(Arc<AtomicUsize>, S)
 where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static;
 
@@ -58,10 +60,10 @@ impl<S, O, E> StreamTracker<S, O, E>
 where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
 {
-    pub fn new(stream: S) -> Self {
-        STREAMS_ACTIVE.fetch_add(1, Ordering::SeqCst);
+    pub fn new(counter: Arc<AtomicUsize>, stream: S) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
         info!("{}", "new stream tracker");
-        Self(stream)
+        Self(counter, stream)
     }
 }
 
@@ -70,7 +72,7 @@ where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        STREAMS_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::SeqCst);
         info!("{}", "drop stream tracker");
     }
 }
@@ -79,14 +81,14 @@ impl<S, O, E> Stream for StreamTracker<S, O, E>
 where
     S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
 {
-    type Item = Result<O, E>;
+    type Item = S::Item;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         // safe since we never move nor leak &mut
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.1) };
         inner.poll_next(cx)
     }
 }
@@ -97,6 +99,8 @@ pub struct Server {
     auth: BTreeMap<String, String>,
     broadcast_rx: Receiver<Vec<u8>>,
     broadcast_tx: Sender<Vec<u8>>,
+    active_streams: Arc<AtomicUsize>,
+    save_path: Option<&'static Path>,
 }
 
 impl fmt::Debug for Server {
@@ -109,27 +113,58 @@ impl fmt::Debug for Server {
     }
 }
 
+fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32) {
+    draw_filled_rect_mut(
+        image,
+        Rect::at(0, (HEIGHT - 24 * (row + 1)) as i32).of_size(WIDTH, 24),
+        *BLACK_RGBA,
+    );
+    draw_text_mut(
+        image,
+        *WHITE_RGBA,
+        0,
+        HEIGHT - 24 * (row + 1),
+        Scale::uniform(24.0),
+        &FONT,
+        &text,
+    );
+}
+
+fn encode_image(
+    image: &image::DynamicImage,
+    dest_image_buf: &mut Vec<u8>,
+) -> Result<(), image::ImageError> {
+    dest_image_buf.truncate(0);
+    let mut encoder = JPEGEncoder::new(dest_image_buf);
+    encoder.encode(&image.to_rgb(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
+    Ok(())
+}
+
 pub struct ImageData {
     last_successful_image_raw: Vec<u8>,
     last_successful_image: Vec<u8>,
+    image_hash: Option<ImageHash>,
+    hash_diff: Option<u32>,
     stale: bool,
     last_success: Option<DateTime<Local>>,
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 enum DownloadError {
-    #[fail(display = "generic download error")]
-    Generic {},
-    #[fail(display = "nonsuccesfull http status: {}", status)]
+    #[error("nonsuccesfull http status: {status:?}")]
     NonSuccessfullStatus { status: u16 },
-    #[fail(display = "download timeout")]
-    Timeout {},
-    #[fail(display = "downloading error")]
-    DownloadingError {},
+    #[error("download timeout")]
+    Timeout,
+    #[error("generic download error")]
+    DownloadingError,
 }
 
 impl Server {
-    pub fn new(download_url: Uri, auth: BTreeMap<String, String>) -> Server {
+    pub fn new(
+        download_url: Uri,
+        auth: BTreeMap<String, String>,
+        save_path: Option<&'static Path>,
+    ) -> Server {
         use image::RgbImage;
         let image_buffer = RgbImage::new(WIDTH, HEIGHT);
         let mut image_jpeg_buffer = vec![];
@@ -146,9 +181,13 @@ impl Server {
             image_data: RwLock::new(ImageData {
                 last_successful_image_raw: image_jpeg_buffer.clone(),
                 last_successful_image: image_jpeg_buffer,
+                image_hash: Default::default(),
+                hash_diff: Default::default(),
                 last_success: Default::default(),
                 stale: false,
             }),
+            active_streams: Arc::new(AtomicUsize::new(0)),
+            save_path,
         }
     }
 
@@ -169,45 +208,31 @@ impl Server {
         };
         debug!("Image stale: {:?}", stale);
         if stale {
-            let mut image_data = self.image_data.clone().write().await;
-            let image_bits = image_data.last_successful_image_raw.clone();
-            image_data.stale = true;
-            let mut image =
-                image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
-            draw_filled_rect_mut(
-                &mut image,
-                Rect::at(500, 500).of_size(100, 100),
-                *BLACK_RGBA,
-            );
-            let stale_text: String = match last_download {
-                Some(instant) => format!(
-                    "STALE. Last image {} ago at {}",
-                    format_duration(
-                        Local::now()
-                            .signed_duration_since(instant)
-                            .to_std()
-                            .unwrap()
+            {
+                let mut image_data = self.image_data.clone().write().await;
+                let image_bits = image_data.last_successful_image_raw.clone();
+                image_data.stale = true;
+                image_data.image_hash = None;
+                let mut image =
+                    image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
+                let stale_text: String = match last_download {
+                    Some(instant) => format!(
+                        "STALE. Last image {} ago at {}",
+                        format_duration(
+                            Local::now()
+                                .signed_duration_since(instant)
+                                .to_std()
+                                .unwrap()
+                        ),
+                        instant.format("%Y-%m-%d %H:%M:%S").to_string()
                     ),
-                    instant.format("%Y-%m-%d %H:%M:%S").to_string()
-                ),
-                None => "STALE".to_owned(),
-            };
-            draw_text_mut(
-                &mut image,
-                *WHITE_RGBA,
-                500,
-                500,
-                Scale::uniform(24.0),
-                &FONT,
-                &stale_text,
-            );
-            let last_successful_image = &mut (*image_data).last_successful_image;
-            last_successful_image.truncate(0);
-            let mut encoder = JPEGEncoder::new(&mut image_data.last_successful_image);
-            encoder.encode(&image.to_rgb(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
-            self.broadcast_tx
-                .broadcast(image_data.last_successful_image.clone())
-                .unwrap();
+                    None => "STALE".to_owned(),
+                };
+                draw_text(&mut image, &stale_text, 0);
+                // let last_successful_image = &mut (*image_data).last_successful_image;
+                encode_image(&image, &mut image_data.last_successful_image)?;
+            }
+            self.update_all_mjpeg().await;
         } else {
             // Opportunistic -- acquire write lock only when needed
             let stale = self.image_data.clone().read().await.stale;
@@ -235,8 +260,8 @@ impl Server {
                 delay_for(before + DOWNLOAD_DELAY - after).await;
             }
             info!(
-                "STREAMS_ACTIVE: {}",
-                STREAMS_ACTIVE.fetch_add(0, Ordering::SeqCst)
+                "Active streams: {}",
+                self.active_streams.fetch_add(0, Ordering::SeqCst)
             );
         }
     }
@@ -249,7 +274,7 @@ impl Server {
         let response = http_client
             .get(self.download_url.clone())
             .await
-            .map_err(|_| DownloadError::Generic {})?;
+            .map_err(|_| DownloadError::DownloadingError)?;
 
         let (parts, body) = response.into_parts();
         let body: hyper::Body = match parts.status {
@@ -274,27 +299,48 @@ impl Server {
         )
         .await
         {
-            Err(_) => Err(DownloadError::Timeout {}),
-            Ok(Err(_)) => Err(DownloadError::DownloadingError {}),
+            Err(_) => Err(DownloadError::Timeout),
+            Ok(Err(_)) => Err(DownloadError::DownloadingError),
             Ok(Ok(body_data)) => Ok(body_data),
         }?;
         debug!("Body consumed, storing image_data");
         {
             let mut image_data = self.image_data.clone().write().await;
             image_data.last_successful_image_raw = body_data.clone();
-            image_data.last_successful_image = body_data;
             image_data.last_success = Some(Local::now());
+            let mut image =
+                image::load_from_memory_with_format(&body_data, image::ImageFormat::Jpeg)
+                    .map_err(|_| DownloadError::DownloadingError)?;
+            let hasher = HasherConfig::new().hash_size(16, 16).to_hasher();
+            let hash = hasher.hash_image(&image);
+            let hash_diff = match &image_data.image_hash {
+                Some(prev_hash) => prev_hash.dist(&hash),
+                None => 9999,
+            };
+            let last_download_utc: DateTime<Utc> = image_data.last_success.unwrap().into();
+            let text: String = format!(
+                "{}: {} (diff: {})",
+                last_download_utc.format("%Y-%m-%d %H:%M:%SZ").to_string(),
+                hash.to_base64(),
+                hash_diff
+            );
+            draw_text(&mut image, &text, 0);
+            encode_image(&image, &mut image_data.last_successful_image)
+                .map_err(|_| DownloadError::DownloadingError)?;
+            image_data.image_hash = Some(hash);
+            image_data.hash_diff = Some(hash_diff);
         }
         debug!("Image data consumed");
-
         self.update_all_mjpeg().await;
         Ok(())
     }
 
     #[instrument]
     async fn update_all_mjpeg(&self) {
-        let image_data = self.image_data.clone().read().await;
-        let image = image_data.last_successful_image.clone();
+        let image = {
+            let image_data = self.image_data.clone().read().await;
+            image_data.last_successful_image.clone()
+        };
         self.broadcast_tx.broadcast(image).unwrap();
     }
 
@@ -318,8 +364,59 @@ impl Server {
             }
         };
 
+        let image_storer_rx = self.broadcast_rx.clone();
+        let store_images = async move {
+            use tokio::io::AsyncWriteExt;
+            if let Some(save_path) = self.save_path {
+                info!("Starting saving images");
+                let mut image_stream =
+                    tokio::time::throttle(std::time::Duration::from_secs(10), image_storer_rx);
+                while let Some(image) = image_stream.next().await {
+                    info!("Got image...saving");
+                    let (last_success, stale, hash_diff) = {
+                        let image_data = self.image_data.clone().read().await;
+                        info!("Got lock...saving");
+                        (
+                            image_data.last_success,
+                            image_data.stale,
+                            image_data.hash_diff,
+                        )
+                    };
+                    if let Some(last_success) = last_success {
+                        info!("Got successful image...saving");
+                        if !stale {
+                            info!("not stale...saving");
+                            let last_success_utc: DateTime<Utc> = last_success.into();
+                            let folder = last_success_utc.format("%Y-%V").to_string();
+                            let filename = format!(
+                                "{hash_diff:04}_{isodate}.jpg",
+                                hash_diff = hash_diff.unwrap(),
+                                isodate = last_success_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+                            );
+                            let folder_abs = save_path.join(folder);
+                            let folder_create = tokio::fs::create_dir(&folder_abs).await;
+                            if let Ok(_) = folder_create {
+                                info!("ok folder created");
+                            } else if let Err(folder_create) = folder_create {
+                                info!("err creating folder {}", folder_create);
+                            }
+                            let file = tokio::fs::File::create(folder_abs.join(filename)).await;
+                            if let Ok(mut file) = file {
+                                info!("ok file");
+                                if let Err(err) = file.write_all(&image).await {
+                                    info!("Error writing file {}", err);
+                                }
+                            } else if let Err(file) = file {
+                                info!("err file {}", file);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
         let download_loop = self.download_picture_async_loop(http_client);
-        future::join3(http_server, stale_monitor, download_loop)
+        future::join4(http_server, stale_monitor, download_loop, store_images)
     }
 
     #[instrument]
@@ -385,8 +482,10 @@ impl Server {
                         .map(|bytes| -> Result<Bytes, Infallible> { Ok(bytes) })
                     })
                     .flatten();
-                let body =
-                    Body::wrap_stream::<_, Bytes, Infallible>(StreamTracker::new(image_stream));
+                let body = Body::wrap_stream::<_, Bytes, Infallible>(StreamTracker::new(
+                    self.active_streams.clone(),
+                    image_stream,
+                ));
                 Ok(Response::builder()
                     .header("Cache-Control", "no-cache")
                     .header("Connection", "close")
