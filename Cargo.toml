@@ -5,39 +5,35 @@ authors = ['Sami Salonen']
 edition = '2018'
 
 [dependencies]
-image = '0.23.0'
+image = '0.23.6'
 imageproc = '0.20.0'
-hyper = '0.13.5'
-bytes = '0.5.4'
+hyper = '0.13.6'
+bytes = '0.5.5'
 lazy_static = '1.4.0'
 hyper-tls = '0.4.1'
 toml = '0.5.6'
 url = '2.1.1'
-rusttype = '0.8.2'
+rusttype = '0.8.2' # also required by imageproc
 futures-locks-pre = '0.5.1-pre'
 rand = '0.7.3'
-thiserror = '1.0.16'
-futures = '0.3.4'
-tracing = '0.1.13'
+thiserror = '1.0.20'
+futures = '0.3.5'
+tracing = '0.1.15'
 tracing-futures = '0.2.4'
 humantime = '2.0.0'
 chrono = '0.4.11'
 time = '0.1'
 lab = '0.7.2'
-img_hash = '3.0'
+img_hash = '3.1.0'
 
 [dependencies.tracing-subscriber]
-version = '0.2.5'
+version = '0.2.6'
 features = ['env-filter']
 
 [dependencies.tokio]
-version = '0.2.20'
-features = [
-    'time',
-    'stream',
-    'fs',
-]
+version = '0.2.21'
+features = ['time', 'stream', 'fs']
 
 [dependencies.serde]
-version = '1.0.105'
+version = '1.0.114'
 features = ['derive']
