@@ -29,7 +29,7 @@ use time::Duration as OldDuration;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::time::{delay_for, timeout};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
 static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
@@ -387,27 +387,30 @@ impl Server {
                         if !stale {
                             info!("not stale...saving");
                             let last_success_utc: DateTime<Utc> = last_success.into();
-                            let folder = last_success_utc.format("%Y-%V").to_string();
                             let filename = format!(
-                                "{hash_diff:04}_{isodate}.jpg",
+                                "diff={hash_diff:04},time={isodate}.jpg",
                                 hash_diff = hash_diff.unwrap(),
-                                isodate = last_success_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+                                isodate = last_success_utc.format("%Y-%m-%dT%H%M%SZ").to_string()
                             );
-                            let folder_abs = save_path.join(folder);
-                            let folder_create = tokio::fs::create_dir(&folder_abs).await;
+                            let folder_abs = save_path.join(
+                                last_success_utc
+                                    .format("year=%Y-week=%V,weekday=%u")
+                                    .to_string(),
+                            );
+                            let folder_create = tokio::fs::create_dir_all(&folder_abs).await;
                             if folder_create.is_ok() {
                                 info!("ok folder created");
                             } else if let Err(folder_create) = folder_create {
-                                info!("err creating folder {}", folder_create);
+                                warn!("err creating folder {:?}: {}", folder_abs, folder_create);
                             }
                             let file = tokio::fs::File::create(folder_abs.join(filename)).await;
                             if let Ok(mut file) = file {
                                 info!("ok file");
                                 if let Err(err) = file.write_all(&image).await {
-                                    info!("Error writing file {}", err);
+                                    warn!("Error writing file: {}", err);
                                 }
                             } else if let Err(file) = file {
-                                info!("err file {}", file);
+                                warn!("err file {}", file);
                             }
                         }
                     }
