@@ -13,7 +13,7 @@ build-release:
 .PHONY: deploy
 deploy: build-release
 	scp target/release/webcam-proxy $(HOST):webcam-proxy.tmp
-	ssh -t $(HOST) "sudo mv webcam-proxy.tmp /usr/local/bin/webcam-proxy/webcam-proxy && sudo systemctl restart webcam-proxy.service"
+	ssh -t $(HOST) "sudo mv webcam-proxy.tmp /usr/local/bin/webcam-proxy/webcam-proxy && chmod +x /usr/local/bin/webcam-proxy/webcam-proxy && sudo systemctl restart webcam-proxy.service"
 
 
 .PHONY: run-nginx

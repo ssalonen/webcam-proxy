@@ -271,11 +271,12 @@ impl Server {
         &'static self,
         http_client: &HttpClient,
     ) -> Result<(), DownloadError> {
-        let response = http_client
-            .get(self.download_url.clone())
-            .await
-            .map_err(|_| DownloadError::DownloadingError)?;
-
+        let response: Response<Body> =
+            match timeout(DOWNLOAD_TIMEOUT, http_client.get(self.download_url.clone())).await {
+                Err(_) => Err(DownloadError::Timeout),
+                Ok(Err(_)) => Err(DownloadError::DownloadingError),
+                Ok(Ok(response)) => Ok(response),
+            }?;
         let (parts, body) = response.into_parts();
         let body: hyper::Body = match parts.status {
             StatusCode::OK => {
