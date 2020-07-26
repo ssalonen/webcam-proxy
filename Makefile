@@ -6,15 +6,18 @@ ifndef HOST
 $(error HOST is not set in .makerc)
 endif
 
+ifndef PORT
+PORT=22
+endif
+
 .PHONY: build-release
 build-release:
 	cargo build --release
 
 .PHONY: deploy
 deploy: build-release
-	scp target/release/webcam-proxy $(HOST):webcam-proxy.tmp
-	ssh -t $(HOST) "sudo mv webcam-proxy.tmp /usr/local/bin/webcam-proxy/webcam-proxy && chmod +x /usr/local/bin/webcam-proxy/webcam-proxy && sudo systemctl restart webcam-proxy.service"
-
+	scp -P $(PORT) target/release/webcam-proxy $(HOST):webcam-proxy.tmp
+	ssh -t -p $(PORT) $(HOST) "sudo mv webcam-proxy.tmp /usr/local/bin/webcam-proxy/webcam-proxy && chmod +x /usr/local/bin/webcam-proxy/webcam-proxy && sudo systemctl restart webcam-proxy.service"
 
 .PHONY: run-nginx
 run-nginx:
