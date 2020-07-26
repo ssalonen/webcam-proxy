@@ -423,12 +423,14 @@ impl Server {
         future::join4(http_server, stale_monitor, download_loop, store_images)
     }
 
-    #[instrument]
     pub async fn serve(
         &'static self,
         request: Request<Body>,
     ) -> Result<Response<Body>, Infallible> {
-        debug!("headers: {:?}", request.headers());
+        debug!(
+            "Request in, user-agent: {:?}",
+            request.headers().get("user-agent")
+        );
         // Extract channel from uri path (last segment)
         if let Some(query) = request.uri().query() {
             let parsed_args = url::form_urlencoded::parse(query.as_bytes())
@@ -441,12 +443,14 @@ impl Server {
                 _ => false,
             };
             if !auth_ok {
+                debug!("-> Bad request: auth not ok");
                 return Ok(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .body(Body::from("Unauthorized"))
                     .expect("Could not create response"));
             }
         } else {
+            debug!("-> Bad request: no query string");
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(Body::from("Invalid query string"))
