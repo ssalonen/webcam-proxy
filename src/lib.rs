@@ -8,7 +8,6 @@ use core::convert::Infallible;
 use core::time::Duration as StdDuration;
 use futures::prelude::*;
 use futures::StreamExt;
-use futures_locks_pre::RwLock;
 use humantime::format_duration;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
@@ -28,6 +27,7 @@ use thiserror::Error;
 use time::Duration as OldDuration;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
+use tokio::sync::RwLock;
 use tokio::time::{delay_for, timeout};
 use tracing::{debug, info, instrument, warn};
 
@@ -194,7 +194,7 @@ impl Server {
     #[instrument]
     async fn check_image_stale_async(&self) -> Result<(), image::ImageError> {
         let (last_download, stale) = {
-            let image_data = self.image_data.clone().read().await;
+            let image_data = self.image_data.read().await;
             (
                 image_data.last_success,
                 match image_data.last_success {
@@ -209,7 +209,7 @@ impl Server {
         debug!("Image stale: {:?}", stale);
         if stale {
             {
-                let mut image_data = self.image_data.clone().write().await;
+                let mut image_data = self.image_data.write().await;
                 let image_bits = image_data.last_successful_image_raw.clone();
                 image_data.stale = true;
                 image_data.image_hash = None;
@@ -235,9 +235,9 @@ impl Server {
             self.update_all_mjpeg().await;
         } else {
             // Opportunistic -- acquire write lock only when needed
-            let stale = self.image_data.clone().read().await.stale;
+            let stale = self.image_data.read().await.stale;
             if stale {
-                let mut image_data = self.image_data.clone().write().await;
+                let mut image_data = self.image_data.write().await;
                 image_data.stale = false;
             }
         }
@@ -306,7 +306,7 @@ impl Server {
         }?;
         debug!("Body consumed, storing image_data");
         {
-            let mut image_data = self.image_data.clone().write().await;
+            let mut image_data = self.image_data.write().await;
             image_data.last_successful_image_raw = body_data.clone();
             image_data.last_success = Some(Local::now());
             let mut image =
@@ -339,7 +339,7 @@ impl Server {
     #[instrument]
     async fn update_all_mjpeg(&self) {
         let image = {
-            let image_data = self.image_data.clone().read().await;
+            let image_data = self.image_data.read().await;
             image_data.last_successful_image.clone()
         };
         self.broadcast_tx.broadcast(image).unwrap();
@@ -375,7 +375,7 @@ impl Server {
                 while let Some(image) = image_stream.next().await {
                     info!("Got image...saving");
                     let (last_success, stale, hash_diff) = {
-                        let image_data = self.image_data.clone().read().await;
+                        let image_data = self.image_data.read().await;
                         info!("Got lock...saving");
                         (
                             image_data.last_success,
@@ -461,7 +461,7 @@ impl Server {
             "/snapshot" => {
                 debug!("Acquiring image_data lock");
                 let image_bytes = {
-                    let image_data = self.image_data.clone().read().await;
+                    let image_data = self.image_data.read().await;
                     image_data.last_successful_image.clone()
                 };
                 debug!("Acquired image_data lock");
