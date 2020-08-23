@@ -43,7 +43,7 @@ static HEIGHT: u32 = 720;
 lazy_static! {
     static ref FONT: Font<'static> = {
         let font_data: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
-        let font: Font<'static> = Font::from_bytes(font_data).expect("Font error");
+        let font: Font<'static> = Font::try_from_bytes(font_data).expect("Font error");
         font
     };
     static ref WHITE_RGBA: Rgba<u8> = Rgba([255u8, 255u8, 255u8, 255u8]);
