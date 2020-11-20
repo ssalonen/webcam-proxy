@@ -11,7 +11,7 @@ use futures::StreamExt;
 use humantime::format_duration;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
-use image::jpeg::JPEGEncoder;
+use image::jpeg::JpegEncoder;
 use image::Rgba;
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
@@ -135,8 +135,8 @@ fn encode_image(
     dest_image_buf: &mut Vec<u8>,
 ) -> Result<(), image::ImageError> {
     dest_image_buf.truncate(0);
-    let mut encoder = JPEGEncoder::new(dest_image_buf);
-    encoder.encode(&image.to_rgb(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
+    let mut encoder = JpegEncoder::new(dest_image_buf);
+    encoder.encode(&image.to_rgb8(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
     Ok(())
 }
 
@@ -168,7 +168,7 @@ impl Server {
         use image::RgbImage;
         let image_buffer = RgbImage::new(WIDTH, HEIGHT);
         let mut image_jpeg_buffer = vec![];
-        let mut encoder = JPEGEncoder::new(&mut image_jpeg_buffer);
+        let mut encoder = JpegEncoder::new(&mut image_jpeg_buffer);
         encoder
             .encode(&image_buffer, WIDTH, HEIGHT, image::ColorType::Rgb8)
             .expect("Could not create blank start image!");
