@@ -16,6 +16,8 @@ use std::io::Read;
 use std::path::Path;
 use std::str::FromStr;
 
+use tokio::runtime;
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
     server: ConfigServer,
@@ -75,9 +77,7 @@ fn main() {
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    use tokio::runtime::Runtime;
-
-    let mut rt = Runtime::new().unwrap();
+    let rt = runtime::Runtime::new().unwrap();
     rt.block_on(async_main());
 }
 // curl http://localhost:3000/stream/1

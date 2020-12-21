@@ -6,8 +6,11 @@ use bytes::Bytes;
 use chrono::prelude::*;
 use core::convert::Infallible;
 use core::time::Duration as StdDuration;
-use futures::prelude::*;
-use futures::StreamExt;
+use futures::pin_mut;
+use futures::stream::Stream;
+use futures::task::Poll;
+use futures::Future;
+use futures::TryStreamExt;
 use humantime::format_duration;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
@@ -25,10 +28,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use time::Duration as OldDuration;
+use tokio::stream::StreamExt;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::sync::RwLock;
-use tokio::time::{delay_for, timeout};
+use tokio::time::{sleep, timeout};
+use tokio_compat_02::FutureExt;
 use tracing::{debug, info, instrument, warn};
 
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
@@ -52,13 +57,13 @@ lazy_static! {
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
 
 #[derive(Default)]
-pub struct StreamTracker<S, O, E>(Arc<AtomicUsize>, S)
+pub struct StreamTracker<S, I>(Arc<AtomicUsize>, S)
 where
-    S: Stream<Item = Result<O, E>> + Send + Sync + 'static;
+    S: Stream<Item = I> + Send + Sync + 'static;
 
-impl<S, O, E> StreamTracker<S, O, E>
+impl<S, I> StreamTracker<S, I>
 where
-    S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
+    S: Stream<Item = I> + Send + Sync + 'static,
 {
     pub fn new(counter: Arc<AtomicUsize>, stream: S) -> Self {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -67,9 +72,9 @@ where
     }
 }
 
-impl<S, O, E> Drop for StreamTracker<S, O, E>
+impl<S, I> Drop for StreamTracker<S, I>
 where
-    S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
+    S: Stream<Item = I> + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
@@ -77,16 +82,16 @@ where
     }
 }
 
-impl<S, O, E> Stream for StreamTracker<S, O, E>
+impl<S, I> Stream for StreamTracker<S, I>
 where
-    S: Stream<Item = Result<O, E>> + Send + Sync + 'static,
+    S: Stream<Item = I> + Send + Sync + 'static,
 {
     type Item = S::Item;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         // safe since we never move nor leak &mut
         let inner = unsafe { self.map_unchecked_mut(|s| &mut s.1) };
         inner.poll_next(cx)
@@ -157,6 +162,20 @@ enum DownloadError {
     Timeout,
     #[error("generic download error")]
     DownloadingError,
+}
+
+#[derive(Clone)]
+struct Tokio03Executor;
+
+impl<F> hyper::rt::Executor<F> for Tokio03Executor
+where
+    F: std::future::Future + Send + 'static,
+{
+    fn execute(&self, fut: F) {
+        tokio::spawn(async move {
+            fut.compat().await;
+        });
+    }
 }
 
 impl Server {
@@ -246,6 +265,7 @@ impl Server {
 
     #[instrument]
     async fn download_picture_async_loop(&'static self, http_client: Arc<HttpClient>) {
+        let mut throttler = futures::stream::repeat(()).throttle(DOWNLOAD_DELAY);
         loop {
             // We ignore download errors, could have something
             // more fancy here, e.g. exponential retry on errors
@@ -254,11 +274,7 @@ impl Server {
             let _ = self.download_picture_async(&http_client).await;
             let after = std::time::Instant::now();
             debug!("Downloaded in {} s.", (after - before).as_secs());
-            if after > before + DOWNLOAD_DELAY {
-                // Download immediately again, no delay
-            } else {
-                delay_for(before + DOWNLOAD_DELAY - after).await;
-            }
+            throttler.next().await;
             info!(
                 "Active streams: {}",
                 self.active_streams.fetch_add(0, Ordering::SeqCst)
@@ -271,12 +287,16 @@ impl Server {
         &'static self,
         http_client: &HttpClient,
     ) -> Result<(), DownloadError> {
-        let response: Response<Body> =
-            match timeout(DOWNLOAD_TIMEOUT, http_client.get(self.download_url.clone())).await {
-                Err(_) => Err(DownloadError::Timeout),
-                Ok(Err(_)) => Err(DownloadError::DownloadingError),
-                Ok(Ok(response)) => Ok(response),
-            }?;
+        let response: Response<Body> = match timeout(
+            DOWNLOAD_TIMEOUT,
+            http_client.get(self.download_url.clone()).compat(),
+        )
+        .await
+        {
+            Err(_) => Err(DownloadError::Timeout),
+            Ok(Err(_)) => Err(DownloadError::DownloadingError),
+            Ok(Ok(response)) => Ok(response),
+        }?;
         let (parts, body) = response.into_parts();
         let body: hyper::Body = match parts.status {
             StatusCode::OK => {
@@ -342,36 +362,62 @@ impl Server {
             let image_data = self.image_data.read().await;
             image_data.last_successful_image.clone()
         };
-        self.broadcast_tx.broadcast(image).unwrap();
+        self.broadcast_tx.send(image).unwrap();
+    }
+
+    async fn server_compat(&'static self, listen: SocketAddr) {
+        use hyper::server::conn::AddrStream;
+        use hyper::service::{make_service_fn, service_fn};
+        let handler = move |req: Request<Body>| self.serve(req);
+        // https://docs.rs/crate/tokio-compat-02/0.1.2/source/examples/hyper_server.rs
+        let incoming = hyper::server::conn::AddrIncoming::bind(&listen).unwrap();
+
+        // let http_server = hyper::Server::bind(&listen)
+        //     .serve(make_service_fn(move |_socket: &AddrStream| async move {
+        //         Ok::<_, Infallible>(service_fn(handler))
+        //     }));
+        hyper::Server::builder(incoming)
+            .executor(Tokio03Executor)
+            .serve(make_service_fn(move |_socket: &AddrStream| async move {
+                Ok::<_, Infallible>(service_fn(handler))
+            }))
+            .await
+            .unwrap()
     }
 
     pub fn run_server(&'static self, listen: SocketAddr) -> impl Future {
-        use hyper::server::conn::AddrStream;
-        use hyper::service::{make_service_fn, service_fn};
-
         let https = HttpsConnector::new();
         let http_client = Arc::new(hyper::Client::builder().build::<_, hyper::Body>(https));
-
-        let handler = move |req: Request<Body>| self.serve(req);
-        let http_server = hyper::Server::bind(&listen).serve(make_service_fn(
-            move |_socket: &AddrStream| async move { Ok::<_, Infallible>(service_fn(handler)) },
-        ));
+        let server_future = async move { self.server_compat(listen).compat().await };
 
         let stale_monitor = async move {
             loop {
                 self.check_image_stale_async().await.unwrap();
                 self.update_all_mjpeg().await;
-                delay_for(std::time::Duration::from_secs(5)).await;
+                sleep(std::time::Duration::from_secs(5)).await;
             }
         };
 
-        let image_storer_rx = self.broadcast_rx.clone();
+        // let image_storer_rx = self.broadcast_rx.clone();
         let store_images = async move {
             use tokio::io::AsyncWriteExt;
             if let Some(save_path) = self.save_path {
                 info!("Starting saving images");
-                let mut image_stream =
-                    tokio::time::throttle(std::time::Duration::from_secs(10), image_storer_rx);
+                let image_stream =
+                    futures::stream::unfold(self.broadcast_rx.clone(), |rx_handle| async move {
+                        let mut handle_clone = rx_handle.clone();
+                        match handle_clone.changed().await {
+                            Ok(_) => {
+                                let image_bytes /* : Ref<Vec<u8>> */ = handle_clone.borrow();
+                                let copy: Vec<u8> = image_bytes.clone();
+
+                                Some((copy, rx_handle))
+                            }
+                            Err(_) => None,
+                        }
+                    })
+                    .throttle(std::time::Duration::from_secs(10));
+                pin_mut!(image_stream);
                 while let Some(image) = image_stream.next().await {
                     info!("Got image...saving");
                     let (last_success, stale, hash_diff) = {
@@ -420,7 +466,7 @@ impl Server {
         };
 
         let download_loop = self.download_picture_async_loop(http_client);
-        future::join4(http_server, stale_monitor, download_loop, store_images)
+        futures::future::join4(server_future, stale_monitor, download_loop, store_images)
     }
 
     pub async fn serve(
@@ -475,21 +521,38 @@ impl Server {
                     .expect("Could not create response"))
             }
             "/stream" => {
-                let rx_handle = self.broadcast_rx.clone();
-                // let weak_ref = std::rc::Weak(std::rc::Rc::new(rx_handle));
-                let image_stream = rx_handle
-                    .map(|image| {
-                        stream::iter(vec![
-                            Bytes::from("--BOUNDARY\r\n"),
-                            Bytes::from("Content-Type: image/jpeg\r\n"),
-                            Bytes::from(format!("Content-Length: {}\r\n", image.len())),
-                            Bytes::from("\r\n"),
-                            Bytes::from(image),
-                            Bytes::from("\r\n"),
-                        ])
-                        .map(|bytes| -> Result<Bytes, Infallible> { Ok(bytes) })
-                    })
-                    .flatten();
+                // let mut rx_handle = self.broadcast_rx.clone();
+                let image_stream = // flatten Stream<Stream<Bytes>> to Stream<Bytes>
+                    futures::stream::StreamExt::flatten(futures::stream::unfold(
+                        self.broadcast_rx.clone(),
+                         |rx_handle| async move  {
+                            let mut handle_clone = rx_handle.clone();
+                            match handle_clone.changed().await {
+                                Ok(_) => {
+                                    let image_bytes /* : Ref<Vec<u8>> */ = handle_clone.borrow();
+                                    let copy : Vec<u8>= image_bytes.clone();
+                                    let chunks = vec![
+                                                Bytes::from("--BOUNDARY\r\n"),
+                                                Bytes::from("Content-Type: image/jpeg\r\n"),
+                                                Bytes::from(format!(
+                                                    "Content-Length: {}\r\n",
+                                                    copy.len()
+                                                )),
+                                                Bytes::from("\r\n"),
+                                                Bytes::from(copy),
+                                                Bytes::from("\r\n"),
+                                            ];
+                                    Some((
+                                        // yielded value (stream of Bytes):
+                                        futures::stream::iter(chunks),
+                                        rx_handle,
+                                    ))
+                                }
+                                Err(_) => None,
+                            }
+                        },
+                    )).map(Ok);
+
                 let body = Body::wrap_stream::<_, Bytes, Infallible>(StreamTracker::new(
                     self.active_streams.clone(),
                     image_stream,
