@@ -1,7 +1,6 @@
 # webcam-proxy
 
 [![CI](https://github.com/ssalonen/webcam-proxy/workflows/Continuous%20Integration/badge.svg)](https://github.com/ssalonen/webcam-proxy/actions)
-[![Coverage Status](https://coveralls.io/repos/github/ssalonen/webcam-proxy/badge.svg?branch=master)](https://coveralls.io/github/ssalonen/webcam-proxy?branch=master)
 
 ## Introduction
 
