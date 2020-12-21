@@ -14,9 +14,11 @@ endif
 build-release:
 	cargo build --release
 
-.PHONY: deploy
-deploy: build-release
-	scp -P $(PORT) target/release/webcam-proxy $(HOST):webcam-proxy.tmp
+.PHONY: deploy-latest
+deploy-latest:
+	./scripts/download_latest_release.sh
+	scp -P $(PORT) /tmp/webcam-proxy $(HOST):webcam-proxy.tmp
+	#rm /tmp/webcam-proxy
 	ssh -t -p $(PORT) $(HOST) "sudo mv webcam-proxy.tmp /usr/local/bin/webcam-proxy/webcam-proxy && sudo chmod +x /usr/local/bin/webcam-proxy/webcam-proxy && sudo systemctl restart webcam-proxy.service"
 
 .PHONY: run-nginx
