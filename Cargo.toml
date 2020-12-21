@@ -1,8 +1,11 @@
 [package]
-name = 'webcam-proxy'
-version = '0.1.0'
-authors = ['Sami Salonen']
-edition = '2018'
+name = "webcam-proxy"
+version = "0.1.1"
+authors = ["Sami Salonen"]
+edition = "2018"
+description = "webcam-proxy mandatory description"
+repository = "https://github.com/ssalonen/webcam-proxy"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 image = '0.23.8'

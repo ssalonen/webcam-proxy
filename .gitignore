@@ -1,4 +1,5 @@
 /target
+.cargo-ok
 **/*.rs.bk
 /_config.example.toml
 .makerc

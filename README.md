@@ -1,6 +1,9 @@
 # webcam-proxy
 
-[![Build Status](https://travis-ci.org/ssalonen/webcam-proxy.svg?branch=master)](https://travis-ci.org/ssalonen/webcam-proxy)
+[![Crates.io](https://img.shields.io/crates/v/webcam-proxy.svg)](https://crates.io/crates/webcam-proxy)
+[![Docs.rs](https://docs.rs/webcam-proxy/badge.svg)](https://docs.rs/webcam-proxy)
+[![CI](https://github.com/ssalonen/webcam-proxy/workflows/Continuous%20Integration/badge.svg)](https://github.com/ssalonen/webcam-proxy/actions)
+[![Coverage Status](https://coveralls.io/repos/github/ssalonen/webcam-proxy/badge.svg?branch=master)](https://coveralls.io/github/ssalonen/webcam-proxy?branch=master)
 
 ## Introduction
 
@@ -14,6 +17,20 @@ clients. Both mjpeg and jpeg endpoints are provided.
 
 This is particularly useful when the proxy is behind a good connection, but the
 web camera is behind low-bandwidth connection.
+
+## Features
+
+- stale image detection while showing last image capture
+- simple authentication, similar to FOSCAM API using `pwd` and `usr` query string parameters
+
+
+## Installation
+
+### Cargo
+
+* Install the rust toolchain in order to have cargo installed by following
+  [this](https://www.rust-lang.org/tools/install) guide.
+* run `cargo install webcam-proxy`
 
 ## Configuration
 
@@ -43,7 +60,11 @@ You can then access the mjpeg feed at
 http://localhost:3000/stream?usr=admin&pwd=admin and the jpeg at
 http://localhost:3000/snapshot?usr=admin&pwd=admin.
 
-## nginx configuration
+## Deployment
+
+See `contrib` folder for examples.
+
+### nginx configuration
 
 The repository contains `nginx.conf` configuration example to reverse proxy
 `cmd=snapPicture2` and `cmd=GetMJStream` to this service, while other endpoints
@@ -53,16 +74,25 @@ By pointing your web camera client to this nginx, you can enjoy the benefits
 of fast mjpeg and cached jpeg responses, while having access to other functions
 of FOSCAM web camera (e.g. admin interface).
 
-## systemd service setup
+### systemd service setup
 
 `example.service` is shows how to setup
 
-## Features
+## License
 
-- stale image detection while showing last image capture
-- simple authentication, similar to FOSCAM API using `pwd` and `usr` query string parameters
+Licensed under either of
 
-## Other
+ * Apache License, Version 2.0
+   ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license
+   ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
-`/ci` and `/.travis.yml` adapted from https://github.com/japaric/trust under
-MIT license.
+at your option.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
