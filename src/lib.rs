@@ -29,7 +29,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use time::Duration as OldDuration;
 use tokio_stream::StreamExt;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -207,7 +206,7 @@ impl Server {
                 match image_data.last_success {
                     Some(last_success) => {
                         Local::now().signed_duration_since(last_success)
-                            > OldDuration::from_std(IMAGE_STALE_THRESHOLD).unwrap()
+                            > chrono::Duration::from_std(IMAGE_STALE_THRESHOLD).unwrap()
                     }
                     _ => true,
                 },
