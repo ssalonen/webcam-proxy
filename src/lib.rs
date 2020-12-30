@@ -11,9 +11,9 @@ use futures::stream::Stream;
 use futures::task::Poll;
 use futures::Future;
 use futures::TryStreamExt;
+use humantime::format_duration;
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use humantime::format_duration;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
 use image::jpeg::JpegEncoder;
@@ -29,11 +29,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio_stream::StreamExt;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
+use tokio_stream::StreamExt;
 use tracing::{debug, info, instrument, warn};
 
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
@@ -164,7 +164,6 @@ enum DownloadError {
     DownloadingError,
 }
 
-
 impl Server {
     pub fn new(
         download_url: Uri,
@@ -275,16 +274,12 @@ impl Server {
         &'static self,
         http_client: &HttpClient,
     ) -> Result<(), DownloadError> {
-        let response: Response<Body> = match timeout(
-            DOWNLOAD_TIMEOUT,
-            http_client.get(self.download_url.clone()),
-        )
-        .await
-        {
-            Err(_) => Err(DownloadError::Timeout),
-            Ok(Err(_)) => Err(DownloadError::DownloadingError),
-            Ok(Ok(response)) => Ok(response),
-        }?;
+        let response: Response<Body> =
+            match timeout(DOWNLOAD_TIMEOUT, http_client.get(self.download_url.clone())).await {
+                Err(_) => Err(DownloadError::Timeout),
+                Ok(Err(_)) => Err(DownloadError::DownloadingError),
+                Ok(Ok(response)) => Ok(response),
+            }?;
         let (parts, body) = response.into_parts();
         let body: hyper::Body = match parts.status {
             StatusCode::OK => {
@@ -359,11 +354,9 @@ impl Server {
         let http_client = Arc::new(hyper::Client::builder().build::<_, hyper::Body>(https));
 
         let handler = move |req: Request<Body>| self.serve(req);
-        let server_future = hyper::Server::bind(&listen)
-            .serve(make_service_fn(move |_socket: &AddrStream| async move {
-                Ok::<_, Infallible>(service_fn(handler))
-            }));
-
+        let server_future = hyper::Server::bind(&listen).serve(make_service_fn(
+            move |_socket: &AddrStream| async move { Ok::<_, Infallible>(service_fn(handler)) },
+        ));
 
         let stale_monitor = async move {
             loop {
@@ -377,8 +370,9 @@ impl Server {
             use tokio::io::AsyncWriteExt;
             if let Some(save_path) = self.save_path {
                 info!("Starting saving images");
-                let image_stream =
-                    futures::stream::unfold(self.broadcast_rx.clone(), move |mut rx_handle| async move {
+                let image_stream = futures::stream::unfold(
+                    self.broadcast_rx.clone(),
+                    move |mut rx_handle| async move {
                         match rx_handle.changed().await {
                             Ok(_) => {
                                 let copy: Vec<u8> = rx_handle.borrow().clone();
@@ -386,8 +380,9 @@ impl Server {
                             }
                             Err(_) => None,
                         }
-                    })
-                    .throttle(std::time::Duration::from_secs(10));
+                    },
+                )
+                .throttle(std::time::Duration::from_secs(10));
                 pin_mut!(image_stream);
                 while let Some(image) = image_stream.next().await {
                     info!("Got image...saving");
