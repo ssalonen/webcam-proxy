@@ -1,6 +1,6 @@
 [package]
 name = 'webcam-proxy'
-version = "0.1.4-dev"
+version = "0.1.4"
 authors = ['Sami Salonen']
 edition = '2018'
 description = 'webcam-proxy mandatory description'
