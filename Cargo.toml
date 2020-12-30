@@ -10,15 +10,14 @@ license = 'MIT OR Apache-2.0'
 [dependencies]
 image = '0.23.12'
 imageproc = '0.22.0'
-hyper = '0.13.9'
-bytes = '0.5.6'
+bytes = '1.0.0'
 lazy_static = '1.4.0'
-hyper-tls = '0.4.3'
+hyper-tls = '0.5.0'
 toml = '0.5.8'
 url = '2.2.0'
 rusttype = '0.9.2'
 rand = '0.8.0'
-thiserror = '1.0.22'
+thiserror = '1.0.23'
 futures = '0.3.8'
 tracing = '0.1.22'
 tracing-futures = '0.2.4'
@@ -26,22 +25,20 @@ humantime = '2.0.1'
 chrono = '0.4.19'
 time = '0.1'
 img_hash = '3.1.0'
-tokio-compat-02 = '0.1.2'
+# https://docs.rs/tokio/1.0.1/tokio/stream/index.html#why-was-stream-not-included-in-tokio-10
+tokio-stream = '0.1.0'
 
 [dependencies.tracing-subscriber]
 version = '0.2.15'
 features = ['env-filter']
 
+[dependencies.hyper]
+version = '0.14.2'
+features = ['client', 'server', 'http1', 'stream']
+
 [dependencies.tokio]
-version = '0.3.6'
-features = [
-    'time',
-    'stream',
-    'fs',
-    'sync',
-    'io-util',
-    'rt-multi-thread',
-]
+version = '1.0.1'
+features = ['time', 'fs', 'sync', 'io-util', 'rt-multi-thread']
 
 [dependencies.serde]
 version = '1.0.118'

@@ -11,6 +11,8 @@ use futures::stream::Stream;
 use futures::task::Poll;
 use futures::Future;
 use futures::TryStreamExt;
+use hyper::server::conn::AddrStream;
+use hyper::service::{make_service_fn, service_fn};
 use humantime::format_duration;
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
@@ -28,12 +30,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use time::Duration as OldDuration;
-use tokio::stream::StreamExt;
+use tokio_stream::StreamExt;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout};
-use tokio_compat_02::FutureExt;
 use tracing::{debug, info, instrument, warn};
 
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
@@ -164,19 +165,6 @@ enum DownloadError {
     DownloadingError,
 }
 
-#[derive(Clone)]
-struct Tokio03Executor;
-
-impl<F> hyper::rt::Executor<F> for Tokio03Executor
-where
-    F: std::future::Future + Send + 'static,
-{
-    fn execute(&self, fut: F) {
-        tokio::spawn(async move {
-            fut.compat().await;
-        });
-    }
-}
 
 impl Server {
     pub fn new(
@@ -265,7 +253,8 @@ impl Server {
 
     #[instrument]
     async fn download_picture_async_loop(&'static self, http_client: Arc<HttpClient>) {
-        let mut throttler = futures::stream::repeat(()).throttle(DOWNLOAD_DELAY);
+        let throttler = futures::stream::repeat(()).throttle(DOWNLOAD_DELAY);
+        pin_mut!(throttler);
         loop {
             // We ignore download errors, could have something
             // more fancy here, e.g. exponential retry on errors
@@ -289,7 +278,7 @@ impl Server {
     ) -> Result<(), DownloadError> {
         let response: Response<Body> = match timeout(
             DOWNLOAD_TIMEOUT,
-            http_client.get(self.download_url.clone()).compat(),
+            http_client.get(self.download_url.clone()),
         )
         .await
         {
@@ -365,30 +354,16 @@ impl Server {
         self.broadcast_tx.send(image).unwrap();
     }
 
-    async fn server_compat(&'static self, listen: SocketAddr) {
-        use hyper::server::conn::AddrStream;
-        use hyper::service::{make_service_fn, service_fn};
-        let handler = move |req: Request<Body>| self.serve(req);
-        // https://docs.rs/crate/tokio-compat-02/0.1.2/source/examples/hyper_server.rs
-        let incoming = hyper::server::conn::AddrIncoming::bind(&listen).unwrap();
-
-        // let http_server = hyper::Server::bind(&listen)
-        //     .serve(make_service_fn(move |_socket: &AddrStream| async move {
-        //         Ok::<_, Infallible>(service_fn(handler))
-        //     }));
-        hyper::Server::builder(incoming)
-            .executor(Tokio03Executor)
-            .serve(make_service_fn(move |_socket: &AddrStream| async move {
-                Ok::<_, Infallible>(service_fn(handler))
-            }))
-            .await
-            .unwrap()
-    }
-
     pub fn run_server(&'static self, listen: SocketAddr) -> impl Future {
         let https = HttpsConnector::new();
         let http_client = Arc::new(hyper::Client::builder().build::<_, hyper::Body>(https));
-        let server_future = async move { self.server_compat(listen).compat().await };
+
+        let handler = move |req: Request<Body>| self.serve(req);
+        let server_future = hyper::Server::bind(&listen)
+            .serve(make_service_fn(move |_socket: &AddrStream| async move {
+                Ok::<_, Infallible>(service_fn(handler))
+            }));
+
 
         let stale_monitor = async move {
             loop {
