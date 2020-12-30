@@ -350,6 +350,7 @@ impl Server {
             let image_data = self.image_data.read().await;
             image_data.last_successful_image.clone()
         };
+        debug!("Updating image for consumers");
         self.broadcast_tx.send(image).unwrap();
     }
 
@@ -372,19 +373,15 @@ impl Server {
             }
         };
 
-        // let image_storer_rx = self.broadcast_rx.clone();
         let store_images = async move {
             use tokio::io::AsyncWriteExt;
             if let Some(save_path) = self.save_path {
                 info!("Starting saving images");
                 let image_stream =
-                    futures::stream::unfold(self.broadcast_rx.clone(), |rx_handle| async move {
-                        let mut handle_clone = rx_handle.clone();
-                        match handle_clone.changed().await {
+                    futures::stream::unfold(self.broadcast_rx.clone(), move |mut rx_handle| async move {
+                        match rx_handle.changed().await {
                             Ok(_) => {
-                                let image_bytes /* : Ref<Vec<u8>> */ = handle_clone.borrow();
-                                let copy: Vec<u8> = image_bytes.clone();
-
+                                let copy: Vec<u8> = rx_handle.borrow().clone();
                                 Some((copy, rx_handle))
                             }
                             Err(_) => None,
@@ -495,16 +492,14 @@ impl Server {
                     .expect("Could not create response"))
             }
             "/stream" => {
-                // let mut rx_handle = self.broadcast_rx.clone();
                 let image_stream = // flatten Stream<Stream<Bytes>> to Stream<Bytes>
                     futures::stream::StreamExt::flatten(futures::stream::unfold(
                         self.broadcast_rx.clone(),
-                         |rx_handle| async move  {
-                            let mut handle_clone = rx_handle.clone();
-                            match handle_clone.changed().await {
+                         move |mut rx_handle| async move  {
+                            match rx_handle.changed().await {
                                 Ok(_) => {
-                                    let image_bytes /* : Ref<Vec<u8>> */ = handle_clone.borrow();
-                                    let copy : Vec<u8>= image_bytes.clone();
+                                    debug!("Sending image over mjpeg");
+                                    let copy : Vec<u8>= rx_handle.borrow().clone();
                                     let chunks = vec![
                                                 Bytes::from("--BOUNDARY\r\n"),
                                                 Bytes::from("Content-Type: image/jpeg\r\n"),
