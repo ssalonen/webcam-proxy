@@ -54,6 +54,7 @@ lazy_static! {
     };
     static ref WHITE_RGBA: Rgba<u8> = Rgba([255u8, 255u8, 255u8, 255u8]);
     static ref BLACK_RGBA: Rgba<u8> = Rgba([0u8, 0u8, 0u8, 255u8]);
+    static ref RED_RGBA: Rgba<u8> = Rgba([141u8, 2u8, 31u8, 255u8]);
 }
 type HttpClient = hyper::Client<HttpsConnector<hyper::client::connect::HttpConnector>>;
 
@@ -119,13 +120,13 @@ impl fmt::Debug for Server {
     }
 }
 
-fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32) {
+fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32, stale: bool) {
     let fontsize = 24i32;
     let height: i32 = image.height().try_into().unwrap();
     draw_filled_rect_mut(
         image,
         Rect::at(0, height - fontsize * (row + 1) as i32).of_size(image.width(), fontsize as u32),
-        *BLACK_RGBA,
+        if stale { *RED_RGBA } else { *BLACK_RGBA },
     );
     draw_text_mut(
         image,
@@ -246,7 +247,7 @@ impl Server {
                     ),
                     None => "STALE".to_owned(),
                 };
-                draw_text(&mut image, &stale_text, 0);
+                draw_text(&mut image, &stale_text, 0, true);
                 // let last_successful_image = &mut (*image_data).last_successful_image;
                 encode_image(&image, &mut image_data.last_successful_image)?;
             }
@@ -341,7 +342,7 @@ impl Server {
                 hash.to_base64(),
                 hash_diff
             );
-            draw_text(&mut image, &text, 0);
+            draw_text(&mut image, &text, 0, false);
             encode_image(&image, &mut image_data.last_successful_image)
                 .map_err(|_| DownloadError::DownloadingError)?;
             image_data.image_hash = Some(hash);
