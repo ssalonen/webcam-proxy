@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use webcam_proxy::Server;
 
+use chrono_tz::Tz;
 use hyper::Uri;
 use std::collections::BTreeMap;
 use std::env;
@@ -21,6 +22,7 @@ use tokio::runtime;
 #[derive(Deserialize, Debug)]
 pub struct Config {
     server: ConfigServer,
+    annotations: Option<ConfigAnnotations>,
     webcam: ConfigWebcam,
 }
 
@@ -28,6 +30,11 @@ pub struct Config {
 pub struct ConfigServer {
     listen: String,
     auth: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ConfigAnnotations {
+    tz: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -53,6 +60,10 @@ lazy_static! {
     };
     static ref SERVER: Server = {
         let download_uri = Uri::from_str(&CONFIG.webcam.url).expect("Invalid webcam URL");
+        let tz: Option<Tz> = CONFIG
+            .annotations
+            .as_ref()
+            .and_then(|a| a.tz.as_ref().map(|t| t.parse().unwrap()));
         Server::new(
             download_uri,
             CONFIG.server.auth.clone(),
@@ -61,6 +72,7 @@ lazy_static! {
                 .save_path
                 .as_ref()
                 .map(|p: &String| Path::new(p)),
+            tz,
         )
     };
 }

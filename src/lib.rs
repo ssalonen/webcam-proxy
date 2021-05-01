@@ -4,6 +4,7 @@ extern crate lazy_static;
 
 use bytes::Bytes;
 use chrono::prelude::*;
+use chrono_tz::Tz;
 use core::convert::Infallible;
 use core::time::Duration as StdDuration;
 use futures::pin_mut;
@@ -22,15 +23,12 @@ use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use img_hash::{HasherConfig, ImageHash};
 use rusttype::{Font, Scale};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::{
-    collections::{BTreeMap, HashMap},
-    convert::TryInto,
-};
 use thiserror::Error;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -42,7 +40,7 @@ use tracing::{debug, info, instrument, warn};
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
 static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
+static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(2);
 
 static DEFAULT_WIDTH: u32 = 1920;
 static DEFAULT_HEIGHT: u32 = 1080;
@@ -108,6 +106,7 @@ pub struct Server {
     broadcast_tx: Sender<Vec<u8>>,
     active_streams: Arc<AtomicUsize>,
     save_path: Option<&'static Path>,
+    tz: Tz,
 }
 
 impl fmt::Debug for Server {
@@ -122,17 +121,19 @@ impl fmt::Debug for Server {
 
 fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32, stale: bool) {
     let fontsize = 24i32;
-    let height: i32 = image.height().try_into().unwrap();
+    //let height: i32 = image.height().try_into().unwrap();
+    //let text_y = height - fontsize * (row + 1) as i32; // row counting from bottom
+    let text_y = (row as i32) * fontsize; // row counting from top
     draw_filled_rect_mut(
         image,
-        Rect::at(0, height - fontsize * (row + 1) as i32).of_size(image.width(), fontsize as u32),
+        Rect::at(0, text_y).of_size(image.width(), fontsize as u32),
         if stale { *RED_RGBA } else { *BLACK_RGBA },
     );
     draw_text_mut(
         image,
         *WHITE_RGBA,
         0,
-        (height - fontsize * (row as i32 + 1)).try_into().unwrap(),
+        text_y as u32,
         Scale::uniform(fontsize as f32),
         &FONT,
         &text,
@@ -178,6 +179,7 @@ impl Server {
         download_url: Uri,
         auth: BTreeMap<String, String>,
         save_path: Option<&'static Path>,
+        tz: Option<Tz>,
     ) -> Server {
         use image::RgbImage;
         let image_buffer = RgbImage::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
@@ -207,6 +209,7 @@ impl Server {
             }),
             active_streams: Arc::new(AtomicUsize::new(0)),
             save_path,
+            tz: tz.unwrap_or(chrono_tz::UTC),
         }
     }
 
@@ -235,16 +238,22 @@ impl Server {
                 let mut image =
                     image::load_from_memory_with_format(&image_bits, image::ImageFormat::Jpeg)?;
                 let stale_text: String = match last_download {
-                    Some(instant) => format!(
-                        "STALE. Last image {} ago at {}",
-                        format_duration(
-                            Local::now()
-                                .signed_duration_since(instant)
-                                .to_std()
-                                .unwrap()
-                        ),
-                        instant.format("%Y-%m-%d %H:%M:%S").to_string()
-                    ),
+                    Some(instant) => {
+                        let last_download_utc: DateTime<Utc> = instant.into();
+                        let last_download_tz = last_download_utc.with_timezone(&self.tz);
+
+                        let duration = Local::now()
+                            .signed_duration_since(instant)
+                            .to_std()
+                            .unwrap();
+                        // Remove sub-second part for nice duration formatting
+                        let duration = StdDuration::from_secs(duration.as_secs());
+                        format!(
+                            "STALE. Last image {} ago at {}",
+                            format_duration(duration),
+                            last_download_tz.format("%Y-%m-%d %H:%M:%S %Z").to_string()
+                        )
+                    }
                     None => "STALE".to_owned(),
                 };
                 draw_text(&mut image, &stale_text, 0, true);
@@ -336,10 +345,10 @@ impl Server {
                 None => 9999,
             };
             let last_download_utc: DateTime<Utc> = image_data.last_success.unwrap().into();
+            let last_download_tz = last_download_utc.with_timezone(&self.tz);
             let text: String = format!(
-                "{}: {} (diff: {})",
-                last_download_utc.format("%Y-%m-%d %H:%M:%SZ").to_string(),
-                hash.to_base64(),
+                "{} (diff: {})",
+                last_download_tz.format("%Y-%m-%d %H:%M:%S %Z").to_string(),
                 hash_diff
             );
             draw_text(&mut image, &text, 0, false);
