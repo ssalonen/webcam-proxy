@@ -40,7 +40,7 @@ use tracing::{debug, info, instrument, warn};
 // TODO: adjust if no clients (no active streams and some time since last snapshot)
 static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
-static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(2);
+static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
 static DEFAULT_WIDTH: u32 = 1920;
 static DEFAULT_HEIGHT: u32 = 1080;
