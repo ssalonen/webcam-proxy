@@ -16,18 +16,21 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
-use image::jpeg::JpegEncoder;
 use image::Rgba;
+use image::{jpeg::JpegEncoder, GenericImageView};
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use img_hash::{HasherConfig, ImageHash};
 use rusttype::{Font, Scale};
-use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashMap},
+    convert::TryInto,
+};
 use thiserror::Error;
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -41,10 +44,8 @@ static DOWNLOAD_DELAY: StdDuration = StdDuration::from_secs(2);
 static DOWNLOAD_TIMEOUT: StdDuration = StdDuration::from_secs(5);
 static IMAGE_STALE_THRESHOLD: StdDuration = StdDuration::from_secs(90);
 
-static WIDTH: u32 = 1280;
-static HEIGHT: u32 = 720;
-//static WIDTH: u32 = 1920;
-//static HEIGHT: u32 = 1080;
+static DEFAULT_WIDTH: u32 = 1920;
+static DEFAULT_HEIGHT: u32 = 1080;
 lazy_static! {
     static ref FONT: Font<'static> = {
         let font_data: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
@@ -119,17 +120,19 @@ impl fmt::Debug for Server {
 }
 
 fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32) {
+    let fontsize = 24i32;
+    let height: i32 = image.height().try_into().unwrap();
     draw_filled_rect_mut(
         image,
-        Rect::at(0, (HEIGHT - 24 * (row + 1)) as i32).of_size(WIDTH, 24),
+        Rect::at(0, height - fontsize * (row + 1) as i32).of_size(image.width(), fontsize as u32),
         *BLACK_RGBA,
     );
     draw_text_mut(
         image,
         *WHITE_RGBA,
         0,
-        HEIGHT - 24 * (row + 1),
-        Scale::uniform(24.0),
+        (height - fontsize * (row as i32 + 1)).try_into().unwrap(),
+        Scale::uniform(fontsize as f32),
         &FONT,
         &text,
     );
@@ -141,7 +144,12 @@ fn encode_image(
 ) -> Result<(), image::ImageError> {
     dest_image_buf.truncate(0);
     let mut encoder = JpegEncoder::new(dest_image_buf);
-    encoder.encode(&image.to_rgb8(), WIDTH, HEIGHT, image::ColorType::Rgb8)?;
+    encoder.encode(
+        &image.to_rgb8(),
+        image.width(),
+        image.height(),
+        image::ColorType::Rgb8,
+    )?;
     Ok(())
 }
 
@@ -171,11 +179,16 @@ impl Server {
         save_path: Option<&'static Path>,
     ) -> Server {
         use image::RgbImage;
-        let image_buffer = RgbImage::new(WIDTH, HEIGHT);
+        let image_buffer = RgbImage::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
         let mut image_jpeg_buffer = vec![];
         let mut encoder = JpegEncoder::new(&mut image_jpeg_buffer);
         encoder
-            .encode(&image_buffer, WIDTH, HEIGHT, image::ColorType::Rgb8)
+            .encode(
+                &image_buffer,
+                DEFAULT_WIDTH,
+                DEFAULT_HEIGHT,
+                image::ColorType::Rgb8,
+            )
             .expect("Could not create blank start image!");
         let (broadcast_tx, broadcast_rx) = watch::channel(image_jpeg_buffer.clone());
         Server {
