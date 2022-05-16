@@ -17,8 +17,8 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
+use image::codecs::jpeg::JpegEncoder;
 use image::Rgba;
-use image::{jpeg::JpegEncoder, GenericImageView};
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use img_hash::{HasherConfig, ImageHash};
@@ -133,7 +133,7 @@ fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32, stale: bool)
         image,
         *WHITE_RGBA,
         0,
-        text_y as u32,
+        text_y,
         Scale::uniform(fontsize as f32),
         &FONT,
         &text,
@@ -339,7 +339,19 @@ impl Server {
                 image::load_from_memory_with_format(&body_data, image::ImageFormat::Jpeg)
                     .map_err(|_| DownloadError::DownloadingError)?;
             let hasher = HasherConfig::new().hash_size(16, 16).to_hasher();
-            let hash = hasher.hash_image(&image);
+            // Convert to img_hash version of image crate
+            let hash: ImageHash;
+            {
+                let image_for_hash = img_hash::image::RgbImage::from_raw(
+                    image.width(),
+                    image.height(),
+                    image.as_bytes().to_vec(),
+                )
+                .expect(
+                    "BUG. Could not create img_hash::image even though image construction was OK",
+                );
+                hash = hasher.hash_image(&image_for_hash);
+            }
             let hash_diff = match &image_data.image_hash {
                 Some(prev_hash) => prev_hash.dist(&hash),
                 None => 9999,
