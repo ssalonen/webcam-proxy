@@ -1830,7 +1830,7 @@ checksum = "3d958d035c4438e28c70e4321a2911302f10135ce78a9c7834c0cab4123d06a2"
 
 [[package]]
 name = "webcam-proxy"
-version = "0.1.7-alpha.0"
+version = "0.1.7"
 dependencies = [
  "bytes",
  "chrono",
