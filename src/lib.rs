@@ -136,7 +136,7 @@ fn draw_text(image: &mut image::DynamicImage, text: &str, row: u32, stale: bool)
         text_y,
         Scale::uniform(fontsize as f32),
         &FONT,
-        &text,
+        text,
     );
 }
 
@@ -251,7 +251,7 @@ impl Server {
                         format!(
                             "STALE. Last image {} ago at {}",
                             format_duration(duration),
-                            last_download_tz.format("%Y-%m-%d %H:%M:%S %Z").to_string()
+                            last_download_tz.format("%Y-%m-%d %H:%M:%S %Z")
                         )
                     }
                     None => "STALE".to_owned(),
@@ -360,7 +360,7 @@ impl Server {
             let last_download_tz = last_download_utc.with_timezone(&self.tz);
             let text: String = format!(
                 "{} (diff: {})",
-                last_download_tz.format("%Y-%m-%d %H:%M:%S %Z").to_string(),
+                last_download_tz.format("%Y-%m-%d %H:%M:%S %Z"),
                 hash_diff
             );
             draw_text(&mut image, &text, 0, false);
@@ -438,8 +438,9 @@ impl Server {
                             let filename = format!(
                                 "diff={hash_diff:04},time={isodate}.jpg",
                                 hash_diff = hash_diff.unwrap(),
-                                isodate = last_success_utc.format("%Y-%m-%dT%H%M%SZ").to_string()
+                                isodate = last_success_utc.format("%Y-%m-%dT%H%M%SZ")
                             );
+                            #[allow(clippy::to_string_in_format_args)]
                             let folder_abs = save_path.join(
                                 last_success_utc
                                     .format("year=%Y-week=%V,weekday=%u")

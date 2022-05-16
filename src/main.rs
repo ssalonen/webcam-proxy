@@ -67,11 +67,7 @@ lazy_static! {
         Server::new(
             download_uri,
             CONFIG.server.auth.clone(),
-            CONFIG
-                .webcam
-                .save_path
-                .as_ref()
-                .map(|p: &String| Path::new(p)),
+            CONFIG.webcam.save_path.as_ref().map(Path::new),
             tz,
         )
     };
